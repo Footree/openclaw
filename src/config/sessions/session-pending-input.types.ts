@@ -5,6 +5,7 @@ import type {
   SessionPendingInputs,
   SessionInputCompletions,
 } from "../../state/openclaw-agent-db.generated.js";
+import type { SessionMentionInvitation } from "./session-mention-invitation.js";
 import type { SessionPendingInputState } from "./session-pending-input-receipt.types.js";
 
 export type SessionPendingInput = {
@@ -33,6 +34,7 @@ export type SessionPendingInputWorkerFacts = {
   idempotencyKey: string;
   lifecycleGeneration: string;
   messageJson: string;
+  mentionInvitation?: SessionMentionInvitation;
   preparedAuthority?: true;
   sources?: readonly SessionPendingInputWorkerFacts[];
 };
@@ -46,6 +48,7 @@ export type SessionPendingInputAppend = {
   inputId: string;
   message: PersistedUserTurnMessage;
   alreadyPromoted: boolean;
+  mentionInvitations?: readonly SessionMentionInvitation[];
   sourceInputIds?: readonly string[];
   stageRelocation?: (destinationInputId: string) => void;
 };

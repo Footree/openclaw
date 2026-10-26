@@ -43,6 +43,10 @@ import type {
 } from "./session-accessor.types.js";
 import type { SessionEntryWritePostimages } from "./session-entry-write-postimage.js";
 import {
+  applySessionMentionInvitationsInTransaction,
+  type SessionMentionInvitationCommit,
+} from "./session-mention-invitation.js";
+import {
   readTranscriptAppendPostimage,
   type TranscriptAppendPostimage,
 } from "./session-transcript-append-postimage.js";
@@ -166,6 +170,8 @@ export function createSessionTranscriptTurnKernel(
           goal.id = options.preparedGoalId;
         }
         const appendedMessages: TranscriptMessageAppendResult<unknown>[] = [];
+        const deferredInvitations: SessionMentionInvitationCommit[] = [];
+        let membershipChanged = false;
         let postimage: TranscriptAppendPostimage | undefined;
         const batch =
           !mutation && !options.assertCurrent
@@ -226,8 +232,11 @@ export function createSessionTranscriptTurnKernel(
             },
             undefined,
             projection,
+            undefined,
+            initialEntry ? (invitation) => deferredInvitations.push(invitation) : undefined,
           );
           if (appended) {
+            membershipChanged ||= appended.membershipChanged === true;
             appendedMessages.push(appended.result);
             postimage = readTranscriptAppendPostimage(appended);
           }
@@ -301,7 +310,7 @@ export function createSessionTranscriptTurnKernel(
         if (mutation) {
           sessionPatch.goal = goal;
         }
-        const next =
+        let next =
           Object.keys(sessionPatch).length > 0
             ? mergeSessionEntry(appendedEntry, sessionPatch)
             : appendedEntry;
@@ -349,6 +358,17 @@ export function createSessionTranscriptTurnKernel(
           }
           identity = { previous: previousIdentity, current: currentIdentity };
         }
+        for (const invitation of deferredInvitations) {
+          membershipChanged =
+            applySessionMentionInvitationsInTransaction(transactionDb, resolved, invitation) ||
+            membershipChanged;
+        }
+        if (membershipChanged && deferredInvitations.length) {
+          // Include the first session's committed involvement in its publication receipt.
+          next = readEntry(transactionDb, true, resolved)!.entry;
+          identity?.current.set(resolved.sessionKey, next);
+          postimages.delete(resolved.sessionKey);
+        }
         const sessionTurnMutationResult = mutation
           ? {
               result: writeSessionGoalOperationReceipt(
@@ -369,7 +389,7 @@ export function createSessionTranscriptTurnKernel(
           sessionEntry: structuredClone(next),
           sessionFile: options.sessionFile,
         };
-        return { result: resultForTarget(result), identity, postimages };
+        return { result: resultForTarget(result), identity, postimages, membershipChanged };
       };
       return runtimeTarget
         ? withSqliteDatabaseWriteScope(
