@@ -15,6 +15,7 @@ function createProps(overrides: Partial<LogsProps> = {}): LogsProps {
     file: null,
     entries: [
       {
+        id: 0,
         raw: '{"level":"info","message":"matched line"}',
         time: "2026-06-14T12:00:00Z",
         level: "info",
@@ -50,6 +51,7 @@ describe("LogsView", () => {
     const props = createProps({
       status: { error: null, hasLoaded: true, stale: false, awaitingGateway: false },
       entries: allTimes.map((time, index) => ({
+        id: index,
         time,
         raw: "log entry",
         message: index === 0 ? "keep initial" : "other entry",
@@ -117,7 +119,7 @@ describe("LogsView", () => {
     }
 
     const appendedTime = "2026-09-22T18:10:00Z";
-    const appendedEntry = { time: appendedTime, raw: "keep appended" };
+    const appendedEntry = { id: allTimes.length, time: appendedTime, raw: "keep appended" };
     setEntries([...props.entries, appendedEntry]);
     flush();
     expect(formatCalls).toHaveBeenCalledTimes(1);
@@ -131,7 +133,11 @@ describe("LogsView", () => {
 
     timeZone = "America/Los_Angeles";
     const nextTime = "2026-09-22T20:00:00Z";
-    setEntries([...props.entries, appendedEntry, { time: nextTime, raw: "keep next" }]);
+    setEntries([
+      ...props.entries,
+      appendedEntry,
+      { id: allTimes.length + 1, time: nextTime, raw: "keep next" },
+    ]);
     flush();
     expectTimes([validTimes[0], appendedTime, nextTime], "en");
 

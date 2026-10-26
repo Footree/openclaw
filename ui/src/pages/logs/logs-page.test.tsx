@@ -6,12 +6,15 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
+import { downloadTextFile } from "../../lib/download.ts";
 import { ApplicationProvider } from "../../lib/reactive/context.ts";
 import { createApplicationGateway } from "../../test-helpers/application-context-fixtures.ts";
 import { missingReadScopeErrorFixture } from "../../test-helpers/gateway-client.ts";
 import { cleanupSolid, mountSolid } from "../../test-helpers/mount-solid.ts";
 import { waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { renderSolid as LogsRoute } from "./logs-page.tsx";
+
+vi.mock("../../lib/download.ts", () => ({ downloadTextFile: vi.fn() }));
 
 type TestContext = ReturnType<typeof contextWithClient>;
 const TRUNCATION_NOTICE = "Log output truncated; showing latest chunk.";
@@ -124,7 +127,7 @@ it("names the page with a level-one heading", async () => {
   );
 });
 
-it("warns only after the display buffer evicts rows and retains that notice", async () => {
+it("exports the retained buffer and warns only after old rows are evicted", async () => {
   const lines = Array.from({ length: 2001 }, (_, index) => `line ${index + 1}`);
   let cursor = 0;
   const request = vi.fn(async () => {
@@ -133,16 +136,27 @@ it("warns only after the display buffer evicts rows and retains that notice", as
     return tail(cursor, pageLines, "/tmp/buffer.log");
   });
   const { page } = await setup(request);
+  const expectExport = (expected: string[]) => {
+    page.container
+      .querySelectorAll<HTMLButtonElement>(".settings-section__actions button")[1]!
+      .click();
+    expect(downloadTextFile).toHaveBeenLastCalledWith(
+      expect.any(String),
+      `${expected.join("\n")}\n`,
+    );
+  };
   for (const count of [1000, 1500, 2000]) {
     await poll();
-    expect(page.lines()).toHaveLength(count);
+    expectExport(lines.slice(0, count));
     expect(page.text()).not.toContain(TRUNCATION_NOTICE);
   }
   await poll();
   const retained = lines.slice(1);
-  page.expectRows(retained, true);
+  expectExport(retained);
+  expect(page.text()).toContain(TRUNCATION_NOTICE);
   await poll();
-  page.expectRows(retained, true);
+  expectExport(retained);
+  expect(page.text()).toContain(TRUNCATION_NOTICE);
 });
 
 it.each([false, true])("clears truncation on replacement (server reset: %s)", async (reset) => {

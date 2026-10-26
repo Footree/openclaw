@@ -47,10 +47,31 @@ function createDataLogFixture(): InteractionFixtureOverrides {
 }
 
 async function waitForLine(page: Page, index: number, timeout = 15_000) {
-  await page
-    .locator(".log-message")
-    .getByText(`Data log ${String(index).padStart(6, "0")}`, { exact: false })
-    .waitFor({ timeout });
+  await page.waitForFunction(
+    (needle) => {
+      for (const row of document.querySelectorAll(".log-message")) {
+        if (row.textContent?.includes(needle)) {
+          return row.getClientRects().length > 0;
+        }
+      }
+      return false;
+    },
+    `Data log ${String(index).padStart(6, "0")}`,
+    { timeout },
+  );
+}
+
+async function retainedLines(page: Page, expected: number) {
+  await page.waitForFunction((count) => {
+    const rows = document.querySelectorAll(".log-row");
+    return Number(rows[0]?.getAttribute("aria-setsize") ?? rows.length) === count;
+  }, expected);
+  const rows = page.locator(".log-row");
+  const mounted = await rows.count();
+  if ((await rows.first().getAttribute("aria-setsize")) !== null && mounted >= 100) {
+    throw new Error(`The log window mounted ${mounted} rows`);
+  }
+  return mounted;
 }
 
 async function bufferReady(page: Page) {
@@ -100,7 +121,7 @@ export const dataLogScenarios: readonly InteractionScenario[] = [
     prepare: bufferReady,
     run: async (page) => {
       await page.getByRole("textbox", { name: "Filter", exact: true }).fill("needle");
-      await page.waitForFunction(() => document.querySelectorAll(".log-row").length === 20);
+      await retainedLines(page, 20);
       await waitForLine(page, 1900);
       return { retainedLines: bufferLimit, matchingLines: 20 };
     },
@@ -113,28 +134,50 @@ export const dataLogScenarios: readonly InteractionScenario[] = [
     prepare: bufferReady,
     run: async (page) => {
       await page.getByRole("checkbox", { name: "info", exact: true }).uncheck();
-      await page.waitForFunction(() => document.querySelectorAll(".log-row").length === 800);
-      return { retainedLines: bufferLimit, matchingLines: 800 };
+      const mountedLines = await retainedLines(page, 800);
+      return { retainedLines: bufferLimit, matchingLines: 800, mountedLines };
     },
   },
   {
     ...fixture,
     id: "data-logs-tail-update",
     route: pathForRoute("logs"),
-    expected: "One 500-line live tail evicts the oldest 500 lines and retains at most 2,000 rows.",
+    expected:
+      "One 500-line live tail evicts the oldest 500 lines, retaining the reader and 2,000 lines.",
     rowSelector: ".log-row",
     prepare: holdNextTail,
     run: async (page, gateway) => {
       const start = heldTails.get(page)!;
       await gateway.resolveDeferred("logs.tail", createDataLogTail(start));
-      await waitForLine(page, start + tailSize - 1);
-      await page.waitForFunction(() => document.querySelectorAll(".log-row").length === 2000);
+      await page.waitForFunction(
+        ({ previousLast, nextLast, position }) => {
+          const rows = [...document.querySelectorAll(".log-row")];
+          if (rows[0]?.hasAttribute("aria-setsize")) {
+            return rows.some(
+              (row) =>
+                row.textContent?.includes(previousLast) &&
+                Number(row.getAttribute("aria-posinset")) === position,
+            );
+          }
+          return rows.some((row) => row.textContent?.includes(nextLast));
+        },
+        {
+          previousLast: `Data log ${String(start - 1).padStart(6, "0")}`,
+          nextLast: `Data log ${String(start + tailSize - 1).padStart(6, "0")}`,
+          position: bufferLimit - tailSize,
+        },
+      );
+      const mountedLines = await retainedLines(page, bufferLimit);
       if (
-        await page.locator(".log-message").getByText("Data log 000000", { exact: false }).count()
+        await page.evaluate(() =>
+          [...document.querySelectorAll(".log-message")].some((row) =>
+            row.textContent?.includes("Data log 000000"),
+          ),
+        )
       ) {
         throw new Error("The live log tail retained an evicted line");
       }
-      return { deliveredLines: tailSize, retainedLines: bufferLimit };
+      return { deliveredLines: tailSize, retainedLines: bufferLimit, mountedLines };
     },
   },
   {
@@ -172,8 +215,8 @@ export const dataLogScenarios: readonly InteractionScenario[] = [
         .click();
       await gateway.waitForRequest("logs.tail", { after });
       await waitForLine(page, 10_499);
-      await page.waitForFunction(() => document.querySelectorAll(".log-row").length === 500);
-      return { retainedLines: tailSize };
+      const mountedLines = await retainedLines(page, tailSize);
+      return { retainedLines: tailSize, mountedLines };
     },
   },
   {
@@ -189,7 +232,7 @@ export const dataLogScenarios: readonly InteractionScenario[] = [
       await page.mouse.wheel(0, -1_000_000);
       await page.waitForFunction(() => document.querySelector(".log-stream")?.scrollTop === 0);
       await gateway.resolveDeferred("logs.tail", createDataLogTail(bufferLimit));
-      await waitForLine(page, bufferLimit + tailSize - 1);
+      await waitForLine(page, tailSize);
       if ((await stream.evaluate((element) => element.scrollTop)) !== 0) {
         throw new Error("A live tail moved the manually scrolled log stream");
       }
@@ -198,6 +241,7 @@ export const dataLogScenarios: readonly InteractionScenario[] = [
         const element = document.querySelector(".log-stream");
         return element && element.scrollTop + element.clientHeight >= element.scrollHeight - 2;
       });
+      await waitForLine(page, bufferLimit + tailSize - 1);
       return { retainedLines: bufferLimit };
     },
   },
@@ -207,7 +251,10 @@ export const dataLogScenarios: readonly InteractionScenario[] = [
     route: pathForRoute("logs"),
     expected:
       "Twenty native 2-second live tails deliver 10,000 lines while retention stays capped at 2,000.",
-    prepare: holdNextTail,
+    prepare: async (page, gateway) => {
+      await holdNextTail(page, gateway);
+      await page.getByRole("switch", { name: "Auto-follow", exact: true }).check();
+    },
     run: async (page, gateway) => {
       const batches = 20;
       await gateway.setMethodResponse("logs.tail", {
@@ -221,12 +268,17 @@ export const dataLogScenarios: readonly InteractionScenario[] = [
       await gateway.resolveDeferred("logs.tail", createDataLogTail(bufferLimit));
       // Native two-second polling is part of this endurance workload.
       await waitForLine(page, bufferLimit + batches * tailSize - 1, 60_000);
-      await page.waitForFunction(() => document.querySelectorAll(".log-row").length === 2000);
+      const mountedLines = await retainedLines(page, bufferLimit);
       await gateway.setMethodResponse(
         "logs.tail",
         createDataLogTail(bufferLimit + batches * tailSize, 0),
       );
-      return { deliveredLines: batches * tailSize, retainedLines: bufferLimit, nativePollMs: 2000 };
+      return {
+        deliveredLines: batches * tailSize,
+        retainedLines: bufferLimit,
+        nativePollMs: 2000,
+        mountedLines,
+      };
     },
   },
 ];
