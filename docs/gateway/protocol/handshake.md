@@ -37,8 +37,8 @@ Client replies with `connect`:
   "id": "…",
   "method": "connect",
   "params": {
-    "minProtocol": 5,
-    "maxProtocol": 5,
+    "minProtocol": 4,
+    "maxProtocol": 4,
     "client": {
       "id": "cli",
       "version": "1.2.3",
@@ -64,6 +64,19 @@ Client replies with `connect`:
 }
 ```
 
+Clients may send small requests immediately after `connect` when their parameters
+do not depend on `hello-ok`. The Gateway queues up to 15 following frames, each at
+most 64 KiB, until hello delivery completes. It then dispatches them in receipt
+order under the connection's current authorization; responses may complete out of
+order. Authentication rejection closes the connection and discards queued frames.
+Clients must retire pending requests with that connection and wait for an accepted
+hello before enabling authenticated UI actions.
+
+This queue is existing protocol behavior. Using it changes neither the wire schema
+nor protocol version 4; clients that wait for hello continue to work. Protocol
+changes remain additive first, with an explicit version decision required for an
+incompatible change.
+
 Gateway responds with `hello-ok`:
 
 The default connect deadline is 30 seconds, allowing authentication and profile
@@ -87,7 +100,7 @@ checks.
   "ok": true,
   "payload": {
     "type": "hello-ok",
-    "protocol": 5,
+    "protocol": 4,
     "server": { "version": "…", "connId": "…" },
     "features": { "methods": ["…"], "events": ["…"] },
     "snapshot": { "…": "…" },
@@ -315,8 +328,8 @@ Client capabilities describe the connected client, not authorization. Agent tool
   "id": "…",
   "method": "connect",
   "params": {
-    "minProtocol": 5,
-    "maxProtocol": 5,
+    "minProtocol": 4,
+    "maxProtocol": 4,
     "client": {
       "id": "ios-node",
       "version": "1.2.3",

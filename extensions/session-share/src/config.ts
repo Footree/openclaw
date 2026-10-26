@@ -31,13 +31,7 @@ export function sessionShareSelection(
   };
 }
 
-export function sessionShareNodeBinding(
-  config: SessionShareConfigSnapshot,
-  nodeId: string,
-): {
-  owner?: string;
-  linkGitHubIdentities: boolean;
-} {
+export function sessionShareNodeBinding(config: SessionShareConfigSnapshot, nodeId: string) {
   const nodes = sessionShareConfig(config).nodes;
   const binding = isRecord(nodes) ? nodes[nodeId] : undefined;
   return {
