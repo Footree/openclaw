@@ -362,7 +362,7 @@ describe("session-share source publication filters", () => {
             (entries) => entries,
           ),
         ).toEqual([]);
-        expect(sql.queries.some((query) => query.includes('from "user_profiles"'))).toBe(true);
+        expect(sql.queries.some((query) => query.includes('from "user_profiles"'))).toBe(false);
         expect(sql.queries.some((query) => query.includes('from "transcript_events"'))).toBe(false);
       } finally {
         sql.restore();

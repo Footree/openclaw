@@ -47,6 +47,7 @@ import type {
   SessionStoreWorkerReadInput,
   SessionStoreWorkerReadScope,
   SessionEntryReadSourcePreparation,
+  SessionEntryCohortReadOptions,
   SessionEntryCohortReader,
   SessionEntrySummaryWorkerRead,
 } from "./session-entry-read-runtime.types.js";
@@ -324,17 +325,10 @@ export async function readSessionEntrySummariesInWorker(input: SessionEntrySumma
 export async function withSessionEntriesFromStoresInWorker<T>(
   inputs: readonly SessionEntryWorkerRead[],
   consume: (reads: readonly PreparedSessionEntryWorkerRead[]) => T,
-  options?: {
-    ordered?: boolean;
-    signal?: AbortSignal;
-    onReadAdmitted?: () => void;
-    prepareSource?: (
-      input: SessionEntryWorkerRead,
-      ...source: Parameters<SessionEntryReadSourcePreparation>
-    ) => void;
-  },
+  options?: SessionEntryCohortReadOptions,
 ): Promise<T> {
   options?.signal?.throwIfAborted();
+  const prepareConsume = options?.prepareConsume;
   const originalInputs = [...inputs];
   const capturedInputs: SessionEntryWorkerRead[] = originalInputs.map((input) => {
     const captured: SessionEntryWorkerRead = {
@@ -364,11 +358,12 @@ export async function withSessionEntriesFromStoresInWorker<T>(
           ),
         }),
       onReadAdmitted: options.onReadAdmitted,
+      prepareConsume,
       signal: options.signal,
     });
   }
   const reads: PreparedSessionEntryWorkerRead[] = [];
-  const enter = (index: number): Promise<T> => {
+  const enter = async (index: number): Promise<T> => {
     const input = capturedInputs[index];
     if (input) {
       return withSessionEntriesFromStoreInWorker(
@@ -386,6 +381,9 @@ export async function withSessionEntriesFromStoresInWorker<T>(
           ((...source) => options.prepareSource!(originalInputs[index]!, ...source)),
         options?.signal,
       );
+    }
+    if (prepareConsume) {
+      await prepareConsume();
     }
     options?.signal?.throwIfAborted();
     for (const read of reads) {

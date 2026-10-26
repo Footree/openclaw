@@ -354,9 +354,11 @@ after awaited preparation, use
 It retains all selected physical sources until its synchronous callback returns.
 An optional `involvingProfileId` matches exact canonical owners or direct profile
 participants, including merge aliases; it never matches mentions or display
-prefixes. Worker preparation retains the selected sources; final native reads
-observe the selected session rows and canonical profile aliases after the last
-await. This is a final-read snapshot, not atomic serialization across databases.
+prefixes. After preparing the selected stores, the shared-state worker reads a
+fresh canonical profile snapshot, without reusing an earlier inspection snapshot
+or resident catalog. Local identity changes invalidate that prepared selection.
+Final native reads observe the selected session rows after the last await. Profile
+and session reads are separate snapshots, not atomic serialization across databases.
 Revalidate current configuration, selected groups, exact session IDs and any other
 caller-owned policy inside the callback, then serialize without awaiting. Returning
 a Promise is rejected. Returned metadata is not retained authority.

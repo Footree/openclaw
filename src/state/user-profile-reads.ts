@@ -1,30 +1,34 @@
-import { runSqliteReadSnapshotSync } from "../infra/sqlite-transaction.js";
-import {
-  executeExistingOpenClawStateRead,
-  withExistingOpenClawStateDatabaseCurrentReadOnly,
-} from "./openclaw-state-db-readonly.js";
-import { tableExists } from "./openclaw-state-db-schema-helpers.js";
+import { executeExistingOpenClawStateRead } from "./openclaw-state-db-readonly.js";
 import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
 import { captureUserProfileAuthorityRead } from "./user-profile-events.js";
-import { selectUserProfileIdentityInDatabase } from "./user-profile-identity.read.js";
 import { prepareUserProfileCatalog, readUserProfileSnapshot } from "./user-profile-list.js";
 import type { CachedGitHubIdentity, CachedGitHubIdentityBinding } from "./user-profiles.types.js";
 
 type ProfileReadOptions = Pick<OpenClawStateDatabaseOptions, "path" | "env">;
 
-/** Final node-host disclosure cannot borrow another process's resident profile publications. */
-export function readCurrentUserProfileIdentity(
+/** Fresh identity snapshots avoid foreign-process catalog reuse; local mutations fence consumption. */
+export async function prepareCurrentUserProfileIdentity(
   profileId: string,
   options: ProfileReadOptions = {},
 ) {
-  return withExistingOpenClawStateDatabaseCurrentReadOnly(
-    ({ db }) =>
-      tableExists(db, "user_profiles")
-        ? runSqliteReadSnapshotSync(db, () => selectUserProfileIdentityInDatabase(db, profileId))
-        : undefined,
-    { ...options, allowNativeRead: true },
+  const context = captureOpenClawStateWorkerContext(options);
+  // Incoming merges change the target's alias cohort, but not its identity cell.
+  const authority = await captureUserProfileAuthorityRead(context.admission);
+  const reply = await executeExistingOpenClawStateRead(
+    { path: context.admission.databasePath, env: context.environment },
+    { type: "userProfiles.identity", profileId },
+    { context, current: true },
   );
+  const profile = reply?.profile;
+  const isCurrent = authority.bind([profileId, profile?.profileId ?? profileId]);
+  const assertCurrent = () => {
+    if (!isCurrent?.()) {
+      throw new Error("Profile identity changed while preparing disclosure. Retry the request.");
+    }
+  };
+  assertCurrent();
+  return { profile, assertCurrent };
 }
 
 /** Fresh disclosure aliases retain their physical store and merge authority across caller waits. */

@@ -59,7 +59,7 @@ import { filterSessionEntriesByProfile } from "../gateway/session-identity-proje
 import { hasErrnoCode } from "../infra/errno.js";
 import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
-import { readCurrentUserProfileIdentity } from "../state/user-profile-reads.js";
+import { prepareCurrentUserProfileIdentity } from "../state/user-profile-reads.js";
 import {
   getSessionEntryAsync,
   projectPluginSessionEntry,
@@ -274,8 +274,8 @@ export type SessionStoreSelectedEntry = SessionStoreEntrySummary & {
 };
 
 /**
- * Prepare selected stores off-thread, then consume current metadata without another await.
- * Final native guards observe cross-process commits; stores are not one atomic snapshot.
+ * Prepare selected stores and a fresh profile snapshot off-thread, then consume synchronously.
+ * Final native session guards observe cross-process commits; stores are not one atomic snapshot.
  * Profile matching uses current canonical owners/direct participants, never display references.
  * Returned data carries no authority after the callback; caller policy must be checked inside it.
  */
@@ -293,9 +293,11 @@ export async function withSessionEntriesAsync<T>(
     ...store,
     sessionKeys: [...store.sessionKeys],
   }));
+  let identity: Awaited<ReturnType<typeof prepareCurrentUserProfileIdentity>> | undefined;
   return await withSessionEntriesFromStoresInWorker(
     stores.map((store) => ({ ...store, env, projection: "list" as const })),
     (reads) => {
+      identity?.assertCurrent();
       // Writer queues cover this process only. Keep the selected-key native guard
       // after all awaits so a separate Gateway's committed revocation is visible.
       const entries = stores.flatMap((store) =>
@@ -315,15 +317,23 @@ export async function withSessionEntriesAsync<T>(
         profileId !== undefined
           ? filterSessionEntriesByProfile({
               entries,
-              profile: readCurrentUserProfileIdentity(profileId, {
-                env,
-              }),
+              profile: identity?.profile,
             })
           : entries;
       reads.forEach((read) => read.assertCurrent());
+      identity?.assertCurrent();
       return consume(selected);
     },
-    { ordered: true },
+    {
+      ordered: true,
+      ...(profileId !== undefined
+        ? {
+            prepareConsume: async () => {
+              identity = await prepareCurrentUserProfileIdentity(profileId, { env });
+            },
+          }
+        : {}),
+    },
   );
 }
 
