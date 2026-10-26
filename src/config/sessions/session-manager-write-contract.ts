@@ -30,6 +30,7 @@ import type {
   PreparedSessionTranscriptHydration as PreparedSessionTranscriptReload,
   SessionTranscriptContextSelection,
 } from "./session-history-read.types.js";
+import type { SessionMentionInvitation } from "./session-mention-invitation.js";
 import type {
   SessionPendingInputWorkerFacts,
   SessionPendingInputWorkerReceipt,
@@ -66,6 +67,7 @@ export type InitialSessionEntryCommit = {
 };
 
 export type SessionMetadataMessageControl = {
+  mentionInvitation?: SessionMentionInvitation;
   pendingInput?: { facts: SessionPendingInputWorkerFacts; relocation?: string };
   freshMessageCheck?: true;
 };
