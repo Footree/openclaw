@@ -9,13 +9,23 @@ describe("Liquid provider setup", () => {
     "never selects or replaces chat primary %s",
     async (primary) => {
       const provider = await registerSingleProviderPlugin(liquid);
-      expect(provider).toMatchObject({ id: "liquid", envVars: ["LIQUID_API_KEY"] });
+      expect(provider).toMatchObject({ id: "liquid-ai", envVars: ["LIQUIDAI_API_KEY"] });
       expect(provider.catalog).toBeUndefined();
       expect(provider.auth).toHaveLength(1);
       const method = provider.auth[0]!;
-      const config: OpenClawConfig = primary
-        ? { agents: { defaults: { model: { primary } } } }
-        : {};
+      const config: OpenClawConfig = {
+        ...(primary ? { agents: { defaults: { model: { primary } } } } : {}),
+        auth: { profiles: { "liquid:manual": { provider: "liquid", mode: "api_key" } } },
+        models: {
+          providers: {
+            liquid: {
+              baseUrl: "https://router.inference.ai.exchange/v1",
+              api: "openai-completions",
+              models: [],
+            },
+          },
+        },
+      };
       const before = structuredClone(config);
       const resolveApiKey = vi.fn(async () => ({
         key: "synthetic-existing-key",
@@ -23,7 +33,7 @@ describe("Liquid provider setup", () => {
       }));
       const toApiKeyCredential = vi.fn();
       const result = await method.runNonInteractive?.({
-        authChoice: "liquid-api-key",
+        authChoice: "liquid-ai-api-key",
         config,
         baseConfig: config,
         opts: {},
@@ -32,23 +42,27 @@ describe("Liquid provider setup", () => {
         toApiKeyCredential,
       });
       expect(result?.agents).toEqual(config.agents);
+      expect(result?.models).toEqual(config.models);
+      expect(result?.auth?.profiles?.["liquid:manual"]).toEqual(
+        config.auth?.profiles?.["liquid:manual"],
+      );
       expect(config).toEqual(before);
-      expect(result?.auth?.profiles?.["liquid:default"]).toMatchObject({
-        provider: "liquid",
+      expect(result?.auth?.profiles?.["liquid-ai:default"]).toMatchObject({
+        provider: "liquid-ai",
         mode: "api_key",
       });
       expect(resolveApiKey).toHaveBeenCalledWith(
         expect.objectContaining({
-          provider: "liquid",
-          envVar: "LIQUID_API_KEY",
-          flagName: "--liquid-api-key",
+          provider: "liquid-ai",
+          envVar: "LIQUIDAI_API_KEY",
+          flagName: "--liquid-ai-api-key",
         }),
       );
       expect(toApiKeyCredential).not.toHaveBeenCalled();
       expect(method.starterModel).toBeUndefined();
       expect(manifest.providerAuthChoices).toContainEqual(
         expect.objectContaining({
-          provider: "liquid",
+          provider: "liquid-ai",
           method: method.id,
           credentialOnly: true,
           appGuidedSecret: true,

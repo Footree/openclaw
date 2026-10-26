@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/liquid-provider",
+  "name": "@openclaw/liquid-ai-provider",
   "version": "2026.10.6",
   "description": "OpenClaw Liquid AI provider plugin.",
   "repository": { "type": "git", "url": "https://github.com/openclaw/openclaw" },
@@ -8,8 +8,8 @@
   "openclaw": {
     "extensions": ["./index.ts"],
     "install": {
-      "clawhubSpec": "clawhub:@openclaw/liquid-provider",
-      "npmSpec": "@openclaw/liquid-provider",
+      "clawhubSpec": "clawhub:@openclaw/liquid-ai-provider",
+      "npmSpec": "@openclaw/liquid-ai-provider",
       "defaultChoice": "npm",
       "minHostVersion": ">=2026.10.6"
     },

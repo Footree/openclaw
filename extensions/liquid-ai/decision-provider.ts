@@ -23,11 +23,11 @@ const MAX_REQUEST_BYTES = 4_500_000;
 function hasUnsupportedParams(context: DecisionProviderContextV2): boolean {
   const { config, agentId, model } = context;
   const agent = agentId ? resolveAgentConfig(config, agentId) : undefined;
-  const modelRef = `liquid/${model.id}`;
+  const modelRef = `liquid-ai/${model.id}`;
   // The native endpoint defines no generation or routing parameters. Never silently
   // discard an authored limit or privacy control inherited from another config layer.
   return [
-    config.models?.providers?.liquid?.params,
+    config.models?.providers?.["liquid-ai"]?.params,
     model.params,
     config.agents?.defaults?.params,
     config.agents?.defaults?.models?.[modelRef]?.params,
@@ -62,7 +62,7 @@ export function buildLiquidDecisionProvider(deps: {
   getImageMetadata: (buffer: Buffer) => Promise<{ width: number; height: number } | null>;
 }): DecisionProviderV2 {
   return {
-    id: "liquid",
+    id: "liquid-ai",
     contractVersion: 2,
     async evaluate(batch, context) {
       context.signal.throwIfAborted();
@@ -126,7 +126,7 @@ export function buildLiquidDecisionProvider(deps: {
             return { status: "unavailable", reason: "unsupported-input" };
           }
         }
-        const configured = context.config.models?.providers?.liquid;
+        const configured = context.config.models?.providers?.["liquid-ai"];
         const configuredRequest = configured?.request;
         // The host owns credential selection and auth overrides; do not resolve auth again.
         const request = sanitizeConfiguredModelProviderRequest(
@@ -139,7 +139,7 @@ export function buildLiquidDecisionProvider(deps: {
             : undefined,
         );
         const requestConfig = resolveProviderHttpRequestConfig({
-          provider: "liquid",
+          provider: "liquid-ai",
           capability: "llm",
           transport: "http",
           baseUrl: context.model.baseUrl ?? configured?.baseUrl ?? BASE_URL,
@@ -169,7 +169,7 @@ export function buildLiquidDecisionProvider(deps: {
             trustConfiguredBaseUrlOrigin: configuredRequest?.allowPrivateNetwork !== false,
           }),
           dispatcherPolicy: requestConfig.dispatcherPolicy,
-          auditContext: "liquid-decisions",
+          auditContext: "liquid-ai-decisions",
         });
         release = guarded.release;
         const response = guarded.response;

@@ -836,18 +836,18 @@
       }
     },
     {
-      "name": "@openclaw/liquid-provider",
+      "name": "@openclaw/liquid-ai-provider",
       "description": "OpenClaw Liquid AI provider plugin.",
       "source": "official",
       "kind": "provider",
       "openclaw": {
         "plugin": {
-          "id": "liquid",
+          "id": "liquid-ai",
           "label": "Liquid AI"
         },
         "providerEndpoints": [
           {
-            "endpointClass": "liquid-native",
+            "endpointClass": "liquid-ai-native",
             "hosts": [
               "api.liquid.ai"
             ]
@@ -855,27 +855,27 @@
         ],
         "providers": [
           {
-            "id": "liquid",
+            "id": "liquid-ai",
             "name": "Liquid AI",
-            "docs": "/providers/liquid",
+            "docs": "/providers/liquid-ai",
             "categories": [
               "cloud",
               "llm"
             ],
             "envVars": [
-              "LIQUID_API_KEY"
+              "LIQUIDAI_API_KEY"
             ],
             "authChoices": [
               {
                 "method": "api-key",
-                "choiceId": "liquid-api-key",
+                "choiceId": "liquid-ai-api-key",
                 "choiceLabel": "Liquid AI API key",
-                "groupId": "liquid",
+                "groupId": "liquid-ai",
                 "groupLabel": "Liquid AI",
                 "groupHint": "Native Decision models",
-                "optionKey": "liquidApiKey",
-                "cliFlag": "--liquid-api-key",
-                "cliOption": "--liquid-api-key <key>",
+                "optionKey": "liquidAiApiKey",
+                "cliFlag": "--liquid-ai-api-key",
+                "cliOption": "--liquid-ai-api-key <key>",
                 "cliDescription": "Liquid AI API key"
               }
             ]
@@ -883,12 +883,12 @@
         ],
         "contracts": {
           "decisionProviders": [
-            "liquid"
+            "liquid-ai"
           ]
         },
         "install": {
-          "clawhubSpec": "clawhub:@openclaw/liquid-provider",
-          "npmSpec": "@openclaw/liquid-provider",
+          "clawhubSpec": "clawhub:@openclaw/liquid-ai-provider",
+          "npmSpec": "@openclaw/liquid-ai-provider",
           "defaultChoice": "npm",
           "minHostVersion": ">=2026.10.6"
         }

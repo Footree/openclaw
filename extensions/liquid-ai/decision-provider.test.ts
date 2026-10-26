@@ -23,7 +23,7 @@ const image: DecisionBatchV2 = {
 };
 function context(overrides: Partial<DecisionProviderContextV2> = {}): DecisionProviderContextV2 {
   return {
-    model: { provider: "liquid", id: "d1-ultra", name: "Liquid d1 Ultra" },
+    model: { provider: "liquid-ai", id: "d1-ultra", name: "Liquid d1 Ultra" },
     config: {},
     auth: { apiKey: "synthetic-prepared-key", mode: "api-key" },
     signal: new AbortController().signal,
@@ -176,7 +176,7 @@ describe("Liquid native Decision provider", () => {
     ctx.model.headers = { "x-auth-fixture": "synthetic-effective" };
     ctx.config.models = {
       providers: {
-        liquid: {
+        "liquid-ai": {
           baseUrl: "https://not-selected.invalid",
           models: [],
           apiKey: "synthetic-not-selected",
@@ -216,7 +216,7 @@ describe("Liquid native Decision provider", () => {
         config: {
           models: {
             providers: {
-              liquid: {
+              "liquid-ai": {
                 baseUrl: "https://api.liquid.ai/decisions/v1",
                 models: [],
                 params: scope === "provider" ? params : undefined,
@@ -227,14 +227,14 @@ describe("Liquid native Decision provider", () => {
             defaults: {
               params: scope === "defaults" ? params : undefined,
               models: {
-                "liquid/d1-ultra": { params: scope === "default-model" ? params : undefined },
+                "liquid-ai/d1-ultra": { params: scope === "default-model" ? params : undefined },
               },
             },
             entries: {
               worker: {
                 params: scope === "agent" ? params : undefined,
                 models: {
-                  "liquid/d1-ultra": { params: scope === "agent-model" ? params : undefined },
+                  "liquid-ai/d1-ultra": { params: scope === "agent-model" ? params : undefined },
                 },
               },
             },

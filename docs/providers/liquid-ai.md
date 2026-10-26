@@ -13,7 +13,7 @@ Boolean probabilities, choices, and rubric scores from text, JSON, or images.
 OpenClaw connects directly to Liquid's native API. No OpenRouter account or
 TypeSafe credential is required.
 
-The `liquid` plugin is an unpublished candidate. These instructions require a
+The `liquid-ai` plugin is an unpublished candidate. These instructions require a
 development checkout containing this plugin and the Decision V2 contract;
 the package metadata alone does not mean it is available on npm or ClawHub.
 
@@ -22,27 +22,31 @@ the package metadata alone does not mean it is available on npm or ClawHub.
 From that checkout, install the local plugin and restart the Gateway:
 
 ```bash
-pnpm openclaw plugins install ./extensions/liquid
+pnpm openclaw plugins install ./extensions/liquid-ai
 pnpm openclaw gateway restart
-pnpm openclaw models auth login --provider liquid --method api-key
+pnpm openclaw models auth login --provider liquid-ai --method api-key
 ```
 
 Enter your Liquid AI API key in the protected prompt. The provider also recognizes
-`LIQUID_API_KEY` in the Gateway environment and normal provider auth profiles.
+`LIQUIDAI_API_KEY` in the Gateway environment and normal provider auth profiles.
 Connecting Liquid stores credentials only: it does not select a chat model or
 replace an existing primary or utility model.
+
+Liquid AI is separate from [Liquid Inference](/providers/liquid-inference).
+The `liquid-ai` provider uses only its own auth profiles and `LIQUIDAI_API_KEY`;
+it does not use the exchange's `liquid` provider or `LIQUID_API_KEY`.
 
 Select a [Decision model](/concepts/decision-models):
 
 ```json5
 {
   agents: {
-    defaults: { decisionModel: "liquid/d1-ultra" },
+    defaults: { decisionModel: "liquid-ai/d1-ultra" },
   },
 }
 ```
 
-Both `liquid/d1` and `liquid/d1-ultra` appear in the Decision picker. They are
+Both `liquid-ai/d1` and `liquid-ai/d1-ultra` appear in the Decision picker. They are
 not chat models. The manifest declares their native capabilities without
 inventing a chat API, context window, output-token limit, or model-list endpoint.
 
@@ -100,7 +104,7 @@ Evaluations send supplied evidence to
 `https://api.liquid.ai/decisions/v1/systemone` and incur Liquid usage charges.
 Standard prepared auth/header overrides, proxy, TLS, and private-network controls
 apply. Decision support is tied to provider-declared compatible routes. Changing
-`models.providers.liquid.baseUrl` to an undeclared endpoint does not grant that
+`models.providers["liquid-ai"].baseUrl` to an undeclared endpoint does not grant that
 endpoint native Decision capabilities. A declared route keeps its path prefix
 and receives `/systemone`. There is no fallback to a chat endpoint or another account.
 

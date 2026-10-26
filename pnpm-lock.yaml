@@ -1578,7 +1578,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
 
-  extensions/liquid:
+  extensions/liquid-ai:
     devDependencies:
       '@openclaw/plugin-sdk':
         specifier: workspace:*

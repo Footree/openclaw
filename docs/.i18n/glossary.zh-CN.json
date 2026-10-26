@@ -5168,12 +5168,12 @@
     "target": "Liquid AI"
   },
   {
-    "source": "Liquid plugin reference",
-    "target": "Liquid 插件参考"
+    "source": "Liquid AI plugin reference",
+    "target": "Liquid AI 插件参考"
   },
   {
-    "source": "liquid",
-    "target": "liquid"
+    "source": "liquid-ai",
+    "target": "liquid-ai"
   },
   {
     "source": "Liquid AI (Decision models)",

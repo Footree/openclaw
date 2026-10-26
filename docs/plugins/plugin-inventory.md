@@ -298,7 +298,7 @@ Each entry lists the package, distribution route, and description.
 
 - **[line](/plugins/reference/line)** (`@openclaw/line`) - npm or ClawHub: `@openclaw/line`. OpenClaw LINE channel plugin for LINE Bot API chats.
 
-- **[liquid](/plugins/reference/liquid)** (`@openclaw/liquid-provider`) - npm or ClawHub: `@openclaw/liquid-provider`. Adds Liquid model provider support to OpenClaw.
+- **[liquid-ai](/plugins/reference/liquid-ai)** (`@openclaw/liquid-ai-provider`) - npm or ClawHub: `@openclaw/liquid-ai-provider`. Adds Liquid AI model provider support to OpenClaw.
 
 - **[llama-cpp](/plugins/reference/llama-cpp)** (`@openclaw/llama-cpp-provider`) - npm or ClawHub: `@openclaw/llama-cpp-provider`. Managed and external llama.cpp servers for GGUF chat, embeddings and local images.
 
