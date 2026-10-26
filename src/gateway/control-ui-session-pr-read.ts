@@ -168,7 +168,7 @@ function withControlUiTaskPrTarget(
   target: ControlUiSessionPrTarget | undefined,
   projection: SessionRowProjection,
   root: EntryRow,
-  getAllows: () => ReturnType<typeof createSessionListEntryFilter>,
+  getAllows: Parameters<typeof prepareTaskPublicationSessions>[2],
   ownerProfileId?: string,
 ): ControlUiSessionPrTarget | undefined {
   if (!target || root.entry.incognito || isIncognitoSessionKey(root.key)) {
@@ -378,7 +378,14 @@ export function createControlUiSessionPrRead(params: {
         (isIncognitoSessionKey(selected.key)
           ? projection.needsMembershipPreparation()
           : projection.sharingTargetState(query).status !== "ready") ||
-        createSessionListEntryFilter({ cfg, client })?.(selected.key, selected.entry) === false
+        createSessionListEntryFilter({
+          cfg,
+          client,
+          membership: projection.readMembership({
+            ...query,
+            storePath: selected.storeTarget.storePath,
+          }),
+        })?.(selected.key, selected.entry) === false
       ) {
         return undefined;
       }
@@ -462,11 +469,23 @@ export function createControlUiSessionPrRead(params: {
         projectedTarget,
         projection,
         current,
-        () =>
-          createSessionListEntryFilter(
-            { cfg: getRuntimeConfig(), client },
-            prepareSessionCreatorProfile(profileInput ?? actorProfile),
-          ),
+        () => {
+          const cfg = getRuntimeConfig();
+          const isCreator = prepareSessionCreatorProfile(profileInput ?? actorProfile);
+          return (row) =>
+            createSessionListEntryFilter(
+              {
+                cfg,
+                client,
+                membership: projection.readMembership({
+                  key: row.key,
+                  agentId: row.agentId,
+                  storePath: row.storeTarget.storePath,
+                }),
+              },
+              isCreator,
+            )?.(row.key, row.entry) !== false;
+        },
         actorProfile,
       );
       return target
