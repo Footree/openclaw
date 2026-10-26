@@ -13,7 +13,7 @@ const file = "/synthetic/gateway.log";
 const levels = ["info", "info", "info", "warn", "error"];
 const heldTails = new WeakMap<Page, number>();
 
-function createDataLogTail(start: number, length = tailSize): LogsTailResult {
+function createDataLogTail(start: number, length = tailSize, wrapped = false): LogsTailResult {
   return {
     file,
     cursor: start + length,
@@ -24,7 +24,7 @@ function createDataLogTail(start: number, length = tailSize): LogsTailResult {
         time: new Date(1_800_000_000_000 + index * 10).toISOString(),
         level: levels[index % levels.length],
         subsystem: `data-lane-${index % 20}`,
-        message: `Data log ${String(index).padStart(6, "0")} ${index % 100 === 0 ? "needle" : "routine"}: synthetic structured detail for stream profiling.`,
+        message: `Data log ${String(index).padStart(6, "0")} ${index % 100 === 0 ? "needle" : "routine"}: ${wrapped ? "Variable height synthetic content. ".repeat(22) : "synthetic structured detail for stream profiling."}`,
       });
     }),
   };
@@ -92,6 +92,25 @@ async function atBottom(page: Page) {
   await page.waitForFunction(() => {
     const stream = document.querySelector(".log-stream");
     return stream && stream.scrollHeight - stream.clientHeight - stream.scrollTop < 120;
+  });
+}
+
+async function visibleLogAnchor(page: Page) {
+  return page.getByRole("region", { name: "Logs", exact: true }).evaluate((stream) => {
+    const clip = stream.getBoundingClientRect();
+    const row = [...stream.querySelectorAll<HTMLElement>(".log-row")].find((candidate) => {
+      const box = candidate.getBoundingClientRect();
+      return box.bottom > clip.top + 1 && box.top < clip.bottom;
+    });
+    if (!row) {
+      throw new Error("The log fixture has no visible reader anchor");
+    }
+    return {
+      top: stream.scrollTop,
+      position: Number(row.getAttribute("aria-posinset")),
+      text: row.textContent,
+      offset: row.getBoundingClientRect().top - clip.top,
+    };
   });
 }
 
@@ -243,6 +262,84 @@ export const dataLogScenarios: readonly InteractionScenario[] = [
       });
       await waitForLine(page, bufferLimit + tailSize - 1);
       return { retainedLines: bufferLimit };
+    },
+  },
+  {
+    dataPage: "logs",
+    id: "data-logs-paused-wrapped-append",
+    route: pathForRoute("logs"),
+    expected:
+      "Appending 50 wrapped rows to a paused 80-row stream preserves the visible reader anchor.",
+    fixtureOverrides: () => ({
+      featureMethods: ["logs.tail"],
+      methodResponses: {
+        "logs.tail": {
+          sequence: [createDataLogTail(0, 80, true), createDataLogTail(80, 0)],
+        },
+      },
+    }),
+    prepare: async (page, gateway) => {
+      await retainedLines(page, 80);
+      await page.getByRole("switch", { name: "Auto-follow", exact: true }).uncheck();
+      await page.getByRole("region", { name: "Logs", exact: true }).evaluate((stream) => {
+        stream.scrollTop = 500;
+      });
+      await gateway.setMethodResponse("logs.tail", createDataLogTail(80, 0));
+      const after = await gateway.deferNext("logs.tail");
+      await gateway.waitForRequest("logs.tail", { after });
+    },
+    run: async (page, gateway) => {
+      const before = await visibleLogAnchor(page);
+      if (before.top < 100) {
+        throw new Error("The log fixture did not establish a nonzero reader offset");
+      }
+      await gateway.resolveDeferred("logs.tail", createDataLogTail(80, 50, true));
+      await gateway.setMethodResponse("logs.tail", createDataLogTail(130, 0));
+      const mountedLines = await retainedLines(page, 130);
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          }),
+      );
+      const after = await visibleLogAnchor(page);
+      if (
+        before.position !== after.position ||
+        before.text !== after.text ||
+        Math.abs(before.offset - after.offset) > 2
+      ) {
+        throw new Error(
+          `A live append moved the paused log reader: ${JSON.stringify({ before, after })}`,
+        );
+      }
+      return {
+        initialLines: 80,
+        deliveredLines: 50,
+        retainedLines: 130,
+        mountedLines,
+        anchorPosition: after.position,
+        anchorOffsetChange: after.offset - before.offset,
+      };
+    },
+  },
+  {
+    ...fixture,
+    id: "data-logs-short-results",
+    route: pathForRoute("logs"),
+    expected: "Empty and one-row filtered results remain visible in the measured log stream.",
+    prepare: bufferReady,
+    run: async (page) => {
+      const filter = page.getByRole("textbox", { name: "Filter", exact: true });
+      await filter.fill("no-synthetic-log-matches");
+      await page.getByText("No log entries.", { exact: true }).waitFor({ state: "visible" });
+      if ((await page.locator(".log-row").count()) !== 0) {
+        throw new Error("The empty log filter retained a rendered row");
+      }
+      await filter.fill("Data log 001999");
+      const mountedLines = await retainedLines(page, 1);
+      await waitForLine(page, 1999);
+      const { offset } = await visibleLogAnchor(page);
+      return { emptyResultsVisible: true, retainedLines: 1, mountedLines, rowOffset: offset };
     },
   },
   {

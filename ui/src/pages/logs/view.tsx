@@ -116,7 +116,6 @@ export function LogsView(props: LogsProps) {
     needle() || LOG_LEVELS.some((level) => !props.levelFilters[level]) ? "filtered" : "visible";
 
   let stream: HTMLDivElement;
-  const windowed = () => filtered().length >= 100;
   const rowsByKey = createMemo(
     () =>
       new Map<VirtualItem["key"], { row: LogRow; index: number }>(
@@ -136,7 +135,6 @@ export function LogsView(props: LogsProps) {
     setWindow({ items: virtualizer.getVirtualItems(), height: virtualizer.getTotalSize() });
   const virtualizer = new Virtualizer<HTMLDivElement, HTMLDivElement>({
     count: 0,
-    enabled: false,
     getScrollElement: () => stream,
     initialOffset: () => stream.scrollTop,
     estimateSize: () => 44,
@@ -166,7 +164,6 @@ export function LogsView(props: LogsProps) {
       virtualizer.setOptions({
         ...virtualizer.options,
         count: next.rows.length,
-        enabled: next.rows.length >= 100,
         getItemKey: next.getItemKey,
       });
       const { _willUpdate: updateVirtualizer } = virtualizer;
@@ -176,13 +173,11 @@ export function LogsView(props: LogsProps) {
     { targets: () => [stream], changeTiming: "sync", fonts: true },
   );
   const rendered = createMemo(() =>
-    windowed()
-      ? window().items.flatMap((item) => {
-          // A filter/trim can settle before its next measured range. Keep surviving keys only.
-          const current = rowsByKey().get(item.key);
-          return current ? [{ ...current, top: item.start }] : [];
-        })
-      : filtered().map((row, index) => ({ row, index, top: 0 })),
+    window().items.flatMap((item) => {
+      // A filter/trim can settle before its next measured range. Keep surviving keys only.
+      const current = rowsByKey().get(item.key);
+      return current ? [{ ...current, top: item.start }] : [];
+    }),
   );
   function Row(rowProps: { item: { row: LogRow; index: number; top: number } }) {
     let element: HTMLDivElement;
@@ -199,16 +194,12 @@ export function LogsView(props: LogsProps) {
         aria-posinset={rowProps.item.index + 1}
         aria-setsize={filtered().length}
         data-index={rowProps.item.index}
-        style={
-          windowed()
-            ? {
-                position: "absolute",
-                width: "100%",
-                top: "0",
-                transform: `translateY(${rowProps.item.top}px)`,
-              }
-            : undefined
-        }
+        style={{
+          position: "absolute",
+          width: "100%",
+          top: "0",
+          transform: `translateY(${rowProps.item.top}px)`,
+        }}
       >
         <div class="log-time mono">{formatLogTime(row().time, timeFormatter())}</div>
         <div class={["log-level", row().level ?? ""]}>{row().level ?? ""}</div>
@@ -312,22 +303,15 @@ export function LogsView(props: LogsProps) {
         <div
           ref={(element) => {
             stream = element;
-            props.onStreamRef?.(element, () => {
-              if (windowed()) {
-                virtualizer.scrollToEnd();
-              } else {
-                element.scrollTop = element.scrollHeight;
-              }
-            });
+            props.onStreamRef?.(element, () => virtualizer.scrollToEnd());
           }}
-          class={["log-stream", { "log-stream--windowed": windowed() }]}
+          class="log-stream log-stream--windowed"
           role="region"
           aria-label={t("gatewayLogs.title")}
           tabindex={0}
           onScroll={(event) => props.onScroll(event)}
           onKeyDown={(event) => {
             if (
-              windowed() &&
               event.key === "End" &&
               !event.altKey &&
               !event.ctrlKey &&
@@ -346,12 +330,7 @@ export function LogsView(props: LogsProps) {
               <Loading fallback={<LoadingState />}>{loading() ? <LoadingState /> : null}</Loading>
             }
           >
-            <div
-              role="list"
-              style={
-                windowed() ? { position: "relative", height: `${window().height}px` } : undefined
-              }
-            >
+            <div role="list" style={{ position: "relative", height: `${window().height}px` }}>
               <For
                 each={rendered()}
                 keyed={(item) => item.row.id}
