@@ -123,6 +123,11 @@ export function LogsView(props: LogsProps) {
         filtered().map((row, index) => [row.id, { row, index }]),
       ),
   );
+  const getItemKey = createMemo(() => {
+    // Layout-only updates keep the extractor for this filtered snapshot.
+    const staticRows = filtered();
+    return (index: number) => staticRows[index]!.id;
+  });
   const [window, setWindow] = createSignal<{ items: VirtualItem[]; height: number }>({
     items: [],
     height: 0,
@@ -140,7 +145,6 @@ export function LogsView(props: LogsProps) {
     overscan: 6,
     // The library retains the reader's keyed row when the oldest lines are trimmed.
     anchorTo: "end",
-    useAnimationFrameWithResizeObserver: true,
     onChange: publish,
   });
   onSettled(() => {
@@ -148,7 +152,7 @@ export function LogsView(props: LogsProps) {
     return mountVirtualizer();
   });
   createLayoutMeasurement(
-    () => ({ rows: filtered(), byKey: rowsByKey() }),
+    () => ({ rows: filtered(), byKey: rowsByKey(), getItemKey: getItemKey() }),
     (next) => {
       if (!next) {
         return;
@@ -162,7 +166,7 @@ export function LogsView(props: LogsProps) {
         ...virtualizer.options,
         count: next.rows.length,
         enabled: next.rows.length >= 100,
-        getItemKey: (index) => next.rows[index]!.id,
+        getItemKey: next.getItemKey,
       });
       const { _willUpdate: updateVirtualizer } = virtualizer;
       updateVirtualizer();
