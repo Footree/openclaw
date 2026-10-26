@@ -138,6 +138,7 @@ export function LogsView(props: LogsProps) {
     count: 0,
     enabled: false,
     getScrollElement: () => stream,
+    initialOffset: () => stream.scrollTop,
     estimateSize: () => 44,
     observeElementRect,
     observeElementOffset,

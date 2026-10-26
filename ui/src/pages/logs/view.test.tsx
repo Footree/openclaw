@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n/index.ts";
 import { pt_BR } from "../../i18n/locales/pt-BR.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
+import { waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { LogsView, type LogsProps } from "./view.tsx";
 
 function createProps(overrides: Partial<LogsProps> = {}): LogsProps {
@@ -44,6 +45,42 @@ afterEach(async () => {
 });
 
 describe("LogsView", () => {
+  it("preserves the reader position when an append enables windowing", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function () {
+      return this.classList.contains("log-row")
+        ? 44
+        : this.classList.contains("log-stream")
+          ? 440
+          : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(900);
+    const rows = Array.from({ length: 130 }, (_, id) => ({ id, raw: `Log row ${id}` }));
+    const [entries, setEntries] = createSignal(rows.slice(0, 80));
+    const props = createProps({
+      status: { error: null, hasLoaded: true, stale: false, awaitingGateway: false },
+      autoFollow: false,
+      onStreamRef: (element) => {
+        // jsdom has no native scrolling implementation.
+        element.scrollTo = (options?: ScrollToOptions | number) => {
+          if (typeof options === "object" && options.top !== undefined) {
+            element.scrollTop = options.top;
+          }
+        };
+      },
+    });
+    const view = mountSolid(() => <LogsView {...props} entries={entries()} />);
+    const stream = view.getByRole("region", { name: "Logs" });
+    await waitForSolid(() => expect(stream.querySelectorAll(".log-row")).toHaveLength(80));
+    stream.scrollTop = 440;
+
+    setEntries(rows);
+
+    await waitForSolid(() => {
+      expect(stream.querySelector(".log-row")?.getAttribute("aria-setsize")).toBe("130");
+      expect(stream.scrollTop).toBe(440);
+    });
+  });
+
   it("formats only new rows until the locale or effective timezone changes", async () => {
     const container = document.createElement("div");
     const validTimes = ["2026-09-22T12:00:37Z", "1970-01-01T00:00:00Z"];
