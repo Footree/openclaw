@@ -29,16 +29,14 @@ export const TEAM_SCALE_COUNTS = {
 } as const;
 
 export function createTeamScaleCounts(options: {
-  offlineFirstPage?: boolean;
   transcriptMessages?: number;
   largeSnapshot?: boolean;
 }) {
   return {
     ...TEAM_SCALE_COUNTS,
     transcriptMessages:
-      (options.offlineFirstPage ? 9 : options.transcriptMessages) ??
+      options.transcriptMessages ??
       (options.largeSnapshot ? 1_100 : TEAM_SCALE_COUNTS.transcriptMessages),
-    inlineWidgets: options.offlineFirstPage ? 0 : TEAM_SCALE_COUNTS.inlineWidgets,
   };
 }
 

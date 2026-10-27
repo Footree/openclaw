@@ -69,7 +69,6 @@ type FixtureOptions = {
   duplicateBootReads?: boolean;
   closedMenuMembers?: boolean;
   largeSnapshot?: boolean;
-  offlineFirstPage?: boolean;
   rowFacts?: boolean;
   offRosterSession?: boolean;
   transcriptMessages?: number;
@@ -198,7 +197,6 @@ export function createControlUiTeamScaleFixture(options: FixtureOptions = {}) {
     inlineWidgets: counts.inlineWidgets,
     now,
     largeSnapshot: options.largeSnapshot,
-    offlineFirstPage: options.offlineFirstPage,
     rowFacts: options.rowFacts,
     duplicateBootReads: options.duplicateBootReads,
     sessionInfo: pinnedRows[0]!,

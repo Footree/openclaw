@@ -2,28 +2,11 @@
 export function warmReloadProbe(
   input: { rowFacts?: boolean; avatars?: boolean } = {},
   samplePaneChrome?: (at: number) => void,
-  readPageSignature?: typeof import("./control-ui-warm-page-signature.ts").readWarmPageSignature,
 ) {
-  const referenceValue = sessionStorage.getItem("openclaw.bench.warm-page-reference");
-  const reference =
-    referenceValue && readPageSignature
-      ? (JSON.parse(referenceValue) as ReturnType<NonNullable<typeof readPageSignature>>)
-      : undefined;
-  let pageSignatureDirty = true;
-  let lastPageSignature: ReturnType<NonNullable<typeof readPageSignature>> | undefined;
-  let unmatchedRegions: string[] = [];
-  document.addEventListener(
-    "load",
-    () => {
-      pageSignatureDirty = true;
-    },
-    true,
-  );
   const milestones: Record<string, number> = {};
   const mutations: Array<{ at: number; count: number; region: string }> = [];
   const shifts: Array<{ at: number; value: number }> = [];
   const states: Array<{ at: number; state: string }> = [];
-  const mainPaneStates: Array<{ at: number; state: string }> = [];
   const longTasks: Array<{ at: number; duration: number }> = [];
   const reads: Array<{ at: number; store: string; hit: boolean; cursor?: boolean }> = [];
   const historyRequests: Array<{
@@ -36,7 +19,6 @@ export function warmReloadProbe(
     messages?: number;
   }> = [];
   const transactions: Array<{
-    startedAt: number;
     at: number;
     label: string;
     rows: number;
@@ -197,13 +179,11 @@ export function warmReloadProbe(
   } = IDBDatabase.prototype;
   const transaction = databasePrototype.transaction;
   IDBDatabase.prototype.transaction = function (this: IDBDatabase, ...args) {
-    const startedAt = performance.now();
     const result = transaction.apply(this, args);
     const label = `${this.name}:${[...result.objectStoreNames].join(",")}:${result.mode}`;
     result.addEventListener("complete", () => {
       performance.mark(`warm-idb:${label}`);
       transactions.push({
-        startedAt,
         at: performance.now(),
         label,
         rows: document.querySelectorAll(".chat-virtual-row").length,
@@ -273,7 +253,6 @@ export function warmReloadProbe(
               mark("connectSent");
             } else if (milestones.hello !== undefined) {
               mark("firstPostHelloRpc");
-              mark("helloHandled");
             }
           }
         }
@@ -313,7 +292,6 @@ export function warmReloadProbe(
     },
   });
   const observer = new MutationObserver((records) => {
-    pageSignatureDirty = true;
     const regions = new Map<string, number>();
     const textRoots = new Set<Element>();
     for (const record of records) {
@@ -395,22 +373,6 @@ export function warmReloadProbe(
     if (stopped) {
       return;
     }
-    if (reference && readPageSignature && pageSignatureDirty) {
-      pageSignatureDirty = false;
-      lastPageSignature = readPageSignature();
-      unmatchedRegions = Object.keys(reference.signatures).filter(
-        (name) => reference.signatures[name] !== lastPageSignature?.signatures[name],
-      );
-      if (
-        !unmatchedRegions.length &&
-        !lastPageSignature.missing.length &&
-        !lastPageSignature.skeletons &&
-        lastPageSignature.imagesReady &&
-        lastPageSignature.dashboardContentsVerified
-      ) {
-        mark("completeCachedCommit");
-      }
-    }
     const sidebar = document.querySelector("aside.sidebar");
     if (sidebar || sidebarFrames.length) {
       const sidebarRows = [
@@ -444,37 +406,6 @@ export function warmReloadProbe(
     const thread = pane?.querySelector(".chat-thread");
     const inner = thread?.querySelector(".chat-thread-inner");
     const currentRows = [...(thread?.querySelectorAll(".chat-virtual-row") ?? [])];
-    if (document.querySelector("#openclaw-boot-shell")) {
-      mark("bootSkeleton");
-    }
-    if (document.querySelector(".lazy-view-state--loading")) {
-      mark("routeSkeleton");
-    }
-    if (sidebar?.getAttribute("data-snapshot-state") === "cached") {
-      mark("cachedSidebar");
-    }
-    const header = pane?.querySelector(".chat-pane__session-title-text")?.textContent ?? null;
-    const composerPresent = Boolean(pane?.querySelector("textarea"));
-    const details = pane?.querySelector(".chat-details");
-    const detailsPresent = Boolean(details?.checkVisibility());
-    const connection = pane?.querySelector(".chat-pane__connection");
-    const connectionPresent = Boolean(connection?.checkVisibility());
-    if (header?.trim()) {
-      mark("header");
-    }
-    if (composerPresent) {
-      mark("composer");
-    }
-    if (detailsPresent) {
-      mark("details");
-    }
-    if (connectionPresent) {
-      mark("reconnectIndicator");
-    }
-    const rowKeys = currentRows.map((row) => row.getAttribute("data-virtual-row-key"));
-    if (JSON.stringify(rowWindows.at(-1)?.rowKeys) !== JSON.stringify(rowKeys)) {
-      rowWindows.push({ at: performance.now(), rowKeys });
-    }
     if (input.avatars && currentRows.length) {
       for (const element of document.querySelectorAll(
         ".chat-thread :is(.chat-avatar-slot, .chat-author-avatar, .identity-avatar--agent, img), aside.sidebar :is(.viewer-avatar, .identity-avatar--agent, img)",
@@ -500,6 +431,10 @@ export function warmReloadProbe(
       mark("firstTranscript");
       if (resize && inner) {
         const at = performance.now();
+        const rowKeys = currentRows.map((row) => row.getAttribute("data-virtual-row-key"));
+        if (JSON.stringify(rowWindows.at(-1)?.rowKeys) !== JSON.stringify(rowKeys)) {
+          rowWindows.push({ at, rowKeys });
+        }
         observeSize(inner);
         const threadHeight = sizes.get(inner);
         if (threadHeight !== undefined && threadFrames.at(-1)?.height !== threadHeight) {
@@ -607,27 +542,13 @@ export function warmReloadProbe(
     if (composer && !composer.disabled && !composer.readOnly) {
       mark("inputReady");
     }
-    const mainPaneState = JSON.stringify({
-      header,
-      rows: visible ? rowKeys : [],
-      composer: composerPresent,
-      details: detailsPresent,
-      skeletons:
-        pane?.querySelectorAll(".lazy-view-state--loading, openclaw-panel-loading-skeleton")
-          .length ?? 0,
-      reconnectIndicator: connectionPresent,
-      live: caughtUp,
-    });
-    if (mainPaneStates.at(-1)?.state !== mainPaneState) {
-      mainPaneStates.push({ at: performance.now(), state: mainPaneState });
-    }
     const state = JSON.stringify({
       shell: Boolean(document.querySelector(".shell")),
       bootSkeleton: Boolean(document.querySelector("#openclaw-boot-shell")),
       viewSkeleton: Boolean(document.querySelector(".lazy-view-state--loading")),
       pane: Boolean(pane),
       sidebar: Boolean(document.querySelector("aside.sidebar")),
-      header,
+      header: pane?.querySelector(".chat-pane__session-title-text")?.textContent ?? null,
       rows: visible,
       input: Boolean(composer && !composer.disabled),
       board: Boolean(document.querySelector(".board-widget__frame")),
@@ -682,15 +603,7 @@ export function warmReloadProbe(
         );
       });
       return {
-        milestones: {
-          ...milestones,
-          helloDispatchEnd:
-            performance
-              .getEntriesByType("mark")
-              .find((entry) => /^cold-load-rpc:\d+:connect:end$/u.test(entry.name))?.startTime ??
-            null,
-          finalRows: rowWindows.at(-1)?.at ?? null,
-        },
+        milestones,
         transcriptPresentation: {
           at: performance.now(),
           status:
@@ -729,18 +642,6 @@ export function warmReloadProbe(
             }
           : undefined,
         states,
-        mainPaneStates,
-        completeCachedPage: reference
-          ? {
-              observedCommitMs: milestones.completeCachedCommit ?? null,
-              reference,
-              lastSignature: lastPageSignature,
-              unmatchedRegions,
-              measurement:
-                "First animation-frame observation matching settled prior-visit text, images and half-pixel geometry across header, visible transcript rows, composer, Details and dashboard; DOM commit upper bound, not compositor paint.",
-            }
-          : null,
-        rowWindows,
         longTasks,
         sidebarFrames,
         avatarTransitions: input.avatars ? avatarTransitions : undefined,
