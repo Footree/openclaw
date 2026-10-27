@@ -750,32 +750,25 @@ describe("Claw package setup and consent", () => {
       expect(installPlugin).not.toHaveBeenCalled();
     });
 
-    it("invalidates consent when a skill trust warning changes after planning", async () => {
-      const planned = skillPlan("review warning one");
-
-      await expect(
-        installClawPackages(planned, {
-          preflightSkill: preflightSkill("review warning two"),
-        }),
-      ).rejects.toMatchObject({ code: "package_owner_state_changed" });
-    });
-
-    it("invalidates consent when a plugin trust warning changes after planning", async () => {
-      const planned = plan([consentPackage]);
+    it.each(["skill", "plugin"] as const)("invalidates changed %s trust warnings", async (kind) => {
+      const planned = plan([kind === "skill" ? skillPackage : consentPackage]);
       Object.assign(planned.actions[0]!.details!, { riskWarning: "review warning one" });
-
-      await expect(
-        installClawPackages(planned, {
-          probePlugin: withStagedInspection(
-            vi.fn().mockResolvedValue({
-              ok: true,
-              pluginId: "audit",
-              warning: "review warning two",
-              clawhub: { integrity },
-            }),
-          ),
-        }),
-      ).rejects.toMatchObject({ code: "package_owner_state_changed" });
+      const deps =
+        kind === "skill"
+          ? { preflightSkill: preflightSkill("review warning two") }
+          : {
+              probePlugin: withStagedInspection(
+                vi.fn().mockResolvedValue({
+                  ok: true,
+                  pluginId: "audit",
+                  warning: "review warning two",
+                  clawhub: { integrity },
+                }),
+              ),
+            };
+      await expect(installClawPackages(planned, deps)).rejects.toMatchObject({
+        code: "package_owner_state_changed",
+      });
     });
   });
 });
