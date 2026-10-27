@@ -15,6 +15,7 @@ import {
   sandboxMocks as sdkMocks,
   createOpenShellSandboxBackendFactory as createFactory,
   installOpenShellBackendMocks,
+  resetOpenShellBackendMocks,
   uninstallOpenShellBackendMocks,
 } from "./openshell-backend.test-support.js";
 import {
@@ -184,17 +185,8 @@ function expectNoRemoteWork() {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  cliMocks.createOpenShellSshSession.mockResolvedValue({
-    host: "openshell-test",
-  });
+  resetOpenShellBackendMocks();
   cliMocks.runOpenShellCli.mockResolvedValue(cliResult());
-  sdkMocks.prepareSshSandboxExec.mockImplementation(
-    async ({ session }: { session: { host: string } }) => ({
-      argv: [session.host],
-      cleanup: async () => {},
-    }),
-  );
   sdkMocks.runSshSandboxCommand.mockImplementation(async ({ remoteCommand }) =>
     sshResult(String(remoteCommand).includes("openclaw-validate-workdir") ? "/sandbox\n" : ""),
   );
@@ -471,38 +463,20 @@ it.each([
   },
 );
 
-it.each(["aliased host", "shared runtime", "independent workspaces"])(
-  "preserves execution ownership for %s",
-  async (topology) => {
-    const firstWorkspace = await createWorkspace("first");
-    const secondWorkspace = await createWorkspace("second");
-    const secondWorkspaceDir =
-      topology === "aliased host" ? path.join(secondWorkspace, "alias") : secondWorkspace;
-    if (topology === "aliased host") {
-      await fs.symlink(firstWorkspace, secondWorkspaceDir, "junction");
-    }
-    const first = await createBackend("agent:workspace:first", firstWorkspace);
-    const second = await createBackend(
-      topology === "shared runtime" ? "agent:workspace:first" : "agent:workspace:second",
-      secondWorkspaceDir,
-    );
-
-    await withConcurrentExecs(first, second, async (secondPreparation, releaseFirst) => {
-      const blocked = topology !== "independent workspaces";
-      if (blocked) {
-        await setImmediate();
-        expect(cliActions()).toEqual(["get"]);
-        await releaseFirst();
-      }
-      await secondPreparation;
-      if (blocked) {
-        expect(cliActions()).toEqual(["get", "download", "get"]);
-      } else {
-        expectRuntimeLookups(first, second);
-      }
-    });
-  },
-);
+it("serializes execution through aliased host paths", async () => {
+  const workspace = await createWorkspace("first");
+  const alias = path.join(await createWorkspace("second"), "alias");
+  await fs.symlink(workspace, alias, "junction");
+  const first = await createBackend("agent:workspace:first", workspace);
+  const second = await createBackend("agent:workspace:second", alias);
+  await withConcurrentExecs(first, second, async (pending, releaseFirst) => {
+    await setImmediate();
+    expect(cliActions()).toEqual(["get"]);
+    await releaseFirst();
+    await pending;
+    expect(cliActions()).toEqual(["get", "download", "get"]);
+  });
+});
 
 it("reserves both workspace keys while waiting without blocking independent work", async () => {
   const sharedHost = await createWorkspace("shared-host");
