@@ -938,6 +938,88 @@ describe("chat state render lifecycle", () => {
     expect(changed).toHaveBeenCalledOnce();
   });
 
+  it("publishes growing tool output at its flush without republishing unchanged frame activity", () => {
+    vi.useFakeTimers();
+    onTestFinished(() => vi.useRealTimers());
+    const { frames } = captureAnimationFrames();
+    const paint = () => {
+      const callbacks = Array.from(frames.values());
+      frames.clear();
+      for (const callback of callbacks) {
+        callback(0);
+      }
+    };
+    const { state } = createSessionEventState({
+      chatRunId: "run",
+      chatStream: "Existing answer",
+      knownAgentRunIds: new Set(["run"]),
+    });
+    const run = chatRunPresentation(state);
+    const activity = vi.fn();
+    const text = vi.fn();
+    onTestFinished(run.subscribeNonText(activity));
+    onTestFinished(run.subscribe(text));
+    const tool = (seq: number, phase: string) =>
+      agentEvent(state, "run", seq, "tool", {
+        toolCallId: "growing-tool",
+        name: "read",
+        phase,
+        partialResult: `Progress ${seq}`,
+      });
+    tool(1, "start");
+    vi.advanceTimersByTime(80);
+    chatEvent(state, "run", "delta", "Answer 2");
+    tool(2, "update");
+    paint();
+    activity.mockClear();
+    text.mockClear();
+
+    for (let seq = 3; seq <= 5; seq++) {
+      chatEvent(state, "run", "delta", `Answer ${seq}`);
+      tool(seq, "update");
+      paint();
+      expect(state.chatRunStartup).toMatchObject({ state: "activity", seq });
+    }
+    expect(text).toHaveBeenCalledTimes(3);
+    expect(activity).not.toHaveBeenCalled();
+    expect(state.chatStream).toBe("Answer 5");
+    vi.advanceTimersByTime(80);
+    expect(activity).toHaveBeenCalledOnce();
+    expect(state.chatToolMessages[0]?.content).toContainEqual({
+      type: "toolresult",
+      name: "read",
+      text: "Progress 5",
+    });
+  });
+
+  it("publishes first observed analysis activity even without a tool-message or startup change", () => {
+    const { frames } = captureAnimationFrames();
+    const { state } = createSessionEventState({
+      chatRunId: "run",
+      knownAgentRunIds: new Set(),
+      chatRunStartup: null,
+    });
+    const activity = vi.fn();
+    onTestFinished(chatRunPresentation(state).subscribeNonText(activity));
+    for (let seq = 1; seq <= 2; seq++) {
+      agentEvent(state, "run", seq, "item", {
+        itemId: "analysis",
+        kind: "analysis",
+        phase: "update",
+        title: "Thinking",
+      });
+      const callbacks = Array.from(frames.values());
+      frames.clear();
+      for (const callback of callbacks) {
+        callback(0);
+      }
+    }
+    expect(state.knownAgentRunIds.has("run")).toBe(true);
+    expect(state.chatRunStartup).toBeNull();
+    expect(state.chatToolMessages).toEqual([]);
+    expect(activity).toHaveBeenCalledOnce();
+  });
+
   it("publishes queued-edit retention without rendering and preserves the edit token", () => {
     const changed = vi.fn();
     const awaitDomCommit = vi.fn(async () => true);
