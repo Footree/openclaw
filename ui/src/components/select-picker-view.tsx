@@ -156,7 +156,8 @@ export function PickerContent<Option extends PickerOption>(props: {
     {
       lazy: true,
       // A search edit that keeps the same choices must not restart row measurement.
-      equals: (a, b) => a.length === b.length && a.every((option, index) => option === b[index]),
+      // A revived lazy memo can have no previous value after reconnect.
+      equals: (a, b) => a?.length === b.length && a.every((option, index) => option === b[index]),
     },
   );
   const selected = createMemo(() =>
