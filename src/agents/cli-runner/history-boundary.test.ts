@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
@@ -64,6 +65,8 @@ const fixture = (withHeader?: boolean) => createHistoryBoundaryFixture(sessionDi
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 type RunParams = PreparedCliRunContext["params"];
 const identity = { credential: { type: "token" as const, provider: "test-cli", token: "epoch-a" } };
+const prepareWriter = async (params: RunParams) =>
+  expectDefined(await prepareCliHistoryBoundary(params, identity), "admitted history writer");
 const append = (f: Fixture, content: string, timestamp = 2) =>
   f.manager().appendMessage({ role: "user", content, timestamp });
 const persistAnswer = (params: RunParams, text: string) =>
@@ -187,8 +190,7 @@ describe("CLI transcript account boundary", () => {
               allowRawTranscriptReseed: true,
             });
             expect(JSON.stringify(await loadTranscriptEvents(f.target))).toBe(before);
-            expect(notes.reseedMessages).toEqual([]);
-            expect(notes.durableContext).toBeUndefined();
+            expect([notes.reseedMessages, notes.durableContext]).toEqual([[], undefined]);
             if (turn === 1) {
               const fresh = await loadCliSessionPromptContext({
                 ...params,
@@ -309,8 +311,7 @@ describe("CLI transcript account boundary", () => {
     await f.withRun("worker-preparation", async (params) => {
       const sql = observeHostDataSql();
       try {
-        const writer = await prepareCliHistoryBoundary(params, identity);
-        expect(writer).toBeDefined();
+        await prepareWriter(params);
         expect(sql.queries, `MAIN SQL observations: ${sql.queries.length}`).toEqual([]);
       } finally {
         sql.restore();
@@ -426,20 +427,18 @@ describe("CLI transcript account boundary", () => {
   it("compares resolved static tokens rather than the unchanged SecretRef", async () => {
     const f = await fixture();
     const tokenRef = { source: "env" as const, provider: "default", id: "TEST_TOKEN" };
-    await f.run(
-      undefined,
+    await withCredential(
+      f,
+      { type: "token", provider: "test-cli", token: "resolved-a", tokenRef },
       async (allowed) => {
         expect(allowed).toBe(true);
         append(f, "prior token", 1);
       },
-      {},
-      { type: "token", provider: "test-cli", token: "resolved-a", tokenRef },
     );
-    await f.run(
-      undefined,
-      async (allowed) => expect(allowed).toBe(false),
-      {},
+    await withCredential(
+      f,
       { type: "token", provider: "test-cli", token: "resolved-b", tokenRef },
+      async (allowed) => expect(allowed).toBe(false),
     );
   });
 
@@ -572,11 +571,7 @@ describe("CLI transcript account boundary", () => {
     await f.withRun("direct-cli-recovery", async (params) => {
       params.sessionEntry = loadSessionEntryReadOnly(f.target);
       const expectedSession = params.sessionEntry;
-      const writer = await prepareCliHistoryBoundary(params, identity);
-      expect(writer).toBeDefined();
-      if (!writer) {
-        throw new Error("Missing admitted history writer");
-      }
+      const writer = await prepareWriter(params);
       expect(params.sessionEntry).toBe(expectedSession);
       expect(loadSessionEntryReadOnly(f.target)?.activeWriterRunId).toBe(params.runId);
       await runWithCliHistoryWriter(writer, async () => {
@@ -667,11 +662,7 @@ describe("CLI transcript account boundary", () => {
       });
       await f.withRun("direct-cli-recovery", async (params) => {
         params.sessionEntry = loadSessionEntryReadOnly(f.target);
-        const writer = await prepareCliHistoryBoundary(params, identity);
-        expect(writer).toBeDefined();
-        if (!writer) {
-          throw new Error("Missing admitted history writer");
-        }
+        const writer = await prepareWriter(params);
         await writer.assertReadable();
         await f.withRun(replacementRunId, async (replacement) => {
           await claimAgentSessionWriter(replacement);
