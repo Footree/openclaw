@@ -36,6 +36,7 @@ import {
   proveWorkerOwnedIncrementalWorkspace,
 } from "./local-workspace-incremental.test-support.js";
 import { withLocalWorkspaceProjection } from "./local-workspace-projection.js";
+import { createLocalWorkspaceProjectionFixture } from "./local-workspace-projection.test-support.js";
 import { withLocalWorkspaceStore } from "./local-workspace-store.js";
 import {
   observeLocalWorkspaceStoreSql,
@@ -97,45 +98,15 @@ beforeEach(async () => {
   vi.stubEnv("GIT_CONFIG_GLOBAL", os.devNull);
   vi.stubEnv("GIT_CONFIG_SYSTEM", os.devNull);
   setRuntimeConfigSnapshot({});
-  repo = path.join(root, "source");
-  canonical = path.join(root, "canonical");
-  await fs.mkdir(repo);
-  await git(repo, "init", "--quiet", "-b", "main");
-  await git(repo, "config", "user.name", "Test");
-  await git(repo, "config", "user.email", "test@example.invalid");
-  await writeText(repo, "source.txt", "original\n");
-  await writeText(repo, ".gitignore", ".env.local\n");
-  await git(repo, "add", ".");
-  await git(repo, "commit", "--quiet", "-m", "base");
-  await git(repo, "worktree", "add", "--quiet", "-b", "openclaw/guest", canonical);
-  await writeText(canonical, ".env.local", "host-only-secret");
-  await git(repo, "config", "credential.helper", "!echo host-credential");
   revoked = false;
-  const sessionKey = `agent:main:dashboard:guest-${randomUUID()}`;
-  owner = {
-    agentId: "main",
-    sessionKey,
-    sessionId: randomUUID(),
-    lifecycleRevision: null,
+  ({ repo, canonical, owner } = await createLocalWorkspaceProjectionFixture({
+    root,
     assertCurrent: () => {
       if (revoked) {
         throw new Error("revoked");
       }
     },
-    worktree: {
-      id: randomUUID(),
-      name: "guest",
-      repoFingerprint: "test",
-      repoRoot: repo,
-      path: canonical,
-      branch: "openclaw/guest",
-      baseRef: "main",
-      ownerKind: "session",
-      ownerId: sessionKey,
-      createdAt: 0,
-      lastActiveAt: 0,
-    },
-  };
+  }));
 });
 
 afterEach(async () => {
@@ -535,6 +506,8 @@ it.each(["reservation", "acceptance", "accepted-result cleanup"] as const)(
         : undefined;
     const interrupted = {
       ...owner,
+      workspaceRelativePath: "",
+      sourceSessionKeys: [],
       assertCurrent: () => {
         if (
           !accepted &&
@@ -621,6 +594,8 @@ it.for([false, true])(
     const execution = new AbortController();
     vi.spyOn(projectionOwner, "resolveLocalWorkspaceOwner").mockResolvedValue({
       ...owner,
+      workspaceRelativePath: "",
+      sourceSessionKeys: [],
       assertCurrent: () => {
         owner.assertCurrent();
         if (!ownerActive) {
@@ -1046,3 +1021,10 @@ it.each(["lifecycle reset", "replacement session"] as const)(
     }
   },
 );
+
+it("keeps native same-agent helpers on the inherited managed projection", async () => {
+  await archiveFixture();
+  const { proveInheritedLocalWorkspace } =
+    await import("./local-workspace-inheritance.test-support.js");
+  await proveInheritedLocalWorkspace(owner, canonical);
+});

@@ -669,6 +669,8 @@ export type SessionProfileInvolvement = {
 };
 
 export type InternalSessionEntryCore = SessionEntryCore & {
+  /** Native creation admits this parent's managed workspace without transferring ownership. */
+  inheritedWorktreeId?: string;
   /** One refinement attempt for a generated Dashboard name, scoped to this session. */
   titleRefinement?: { sessionId: string; generatedName: string; remainingMessages: number };
   /** Original unbound files, private to this conversation's adopted workspace. */

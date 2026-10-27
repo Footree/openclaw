@@ -429,6 +429,7 @@ export async function commitPreparedSessionWorkspace(params: {
           sessionRoot: prepared.sessionRoot,
           spawnedCwd: prepared.spawnedCwd,
           spawnedWorkspaceDir: undefined,
+          inheritedWorktreeId: undefined,
           ...(prepared.worktree ? { worktree: prepared.worktree } : {}),
           ...(params.priorWorkspace ? { priorWorkspace: params.priorWorkspace } : {}),
           ...(params.clearPendingIntent

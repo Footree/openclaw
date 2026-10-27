@@ -121,6 +121,44 @@ async function resetMainSession() {
   }>("sessions.reset", { key: "main" });
 }
 
+test.each(["preserve", "detach", "replace"] as const)(
+  "sessions.reset handles inherited workspace choice when asked to %s",
+  async (selection) => {
+    const { storePath } = await seedMainSession();
+    const scope = { agentId: "main", storePath, sessionKey: "agent:main:main" };
+    await upsertSessionEntryCore(scope, {
+      ...RESET_PARENT_GRANT_FIXTURE,
+      inheritedWorktreeId: "managed-parent-worktree",
+      spawnedWorkspaceDir: "/synthetic/inherited-workspace",
+      sessionRoot: "/synthetic/inherited-workspace",
+      permissionMode: "workspace",
+    });
+    const reset = await resetService(
+      selection === "detach"
+        ? { clearSpawnedCwd: true }
+        : selection === "replace"
+          ? { spawnedCwd: "/synthetic/replacement-workspace" }
+          : {},
+    );
+    expect(reset.ok).toBe(true);
+    const stored = loadSessionEntry(scope);
+    if (selection === "preserve") {
+      expect(stored).toMatchObject({
+        inheritedWorktreeId: "managed-parent-worktree",
+        spawnedWorkspaceDir: "/synthetic/inherited-workspace",
+        sessionRoot: "/synthetic/inherited-workspace",
+        permissionMode: "workspace",
+      });
+    } else {
+      expect(stored).not.toHaveProperty("inheritedWorktreeId");
+      if (selection === "replace") {
+        expect(stored).toMatchObject({ spawnedCwd: "/synthetic/replacement-workspace" });
+      }
+    }
+    expect(stored).not.toHaveProperty("worktree");
+  },
+);
+
 type ArchivedMainResetCase = {
   key: string;
   mainKey?: string;
