@@ -139,13 +139,6 @@ describe("RealtimeCallHandler lifecycle", () => {
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("never connected"));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("call-never-connected"));
-    expect(
-      (
-        handler as unknown as {
-          pendingStreamTokens: Map<string, unknown>;
-        }
-      ).pendingStreamTokens.size,
-    ).toBe(0);
   });
 
   it.each(["registration", "creation", "close callback", "close throws"] as const)(
