@@ -309,7 +309,7 @@ describe("plugin-owned CLI native tool policy", () => {
   });
 
   it("projects rewritten canonical file arguments back into the native Edit schema", async () => {
-    const hook = vi.fn(async () => ({
+    const hook = vi.fn(async (_event: unknown) => ({
       params: {
         path: "/tmp/approved.txt",
         edits: [{ oldText: "safe-before", newText: "safe-after" }],
@@ -324,16 +324,13 @@ describe("plugin-owned CLI native tool policy", () => {
       replace_all: false,
     });
 
-    expect(hook).toHaveBeenCalledWith(
-      expect.objectContaining({
-        toolName: "edit",
-        params: expect.objectContaining({
-          path: "/tmp/original.txt",
-          edits: [{ oldText: "before", newText: "after" }],
-        }),
-      }),
-      expect.anything(),
-    );
+    expect(hook.mock.calls[0]?.[0]).toMatchObject({
+      toolName: "edit",
+      params: {
+        path: "/tmp/original.txt",
+        edits: [{ oldText: "before", newText: "after" }],
+      },
+    });
     expect(decision).toEqual({
       behavior: "allow",
       updatedInput: {
@@ -453,9 +450,7 @@ describe("CLI MCP capture authority", () => {
           targetToken,
           runtimeOwnerToken,
         }),
-      revokeProcessToken: () => {
-        revokeMcpLoopbackClientGrant(grant.token);
-      },
+      revokeProcessToken: () => void revokeMcpLoopbackClientGrant(grant.token),
       activate: (captureKey, assertCurrent) =>
         void activateMcpLoopbackClientGrantCapture({ ...owner, captureKey, assertCurrent }),
       deactivate: (captureKey) =>

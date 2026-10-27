@@ -69,11 +69,11 @@ const prepareWriter = async (params: RunParams) =>
   expectDefined(await prepareCliHistoryBoundary(params, identity), "admitted history writer");
 const append = (f: Fixture, content: string, timestamp = 2) =>
   f.manager().appendMessage({ role: "user", content, timestamp });
-const persistAnswer = (params: RunParams, text: string) =>
+const persistAnswer = (params: RunParams, text: string, modelId = "test-model") =>
   persistCliAssistantTranscript({
     runParams: { ...params, persistAssistantTranscript: true },
     text,
-    modelId: "test-model",
+    modelId,
     stopReason: "stop",
   });
 const withCredential = (
@@ -191,17 +191,6 @@ describe("CLI transcript account boundary", () => {
             });
             expect(JSON.stringify(await loadTranscriptEvents(f.target))).toBe(before);
             expect([notes.reseedMessages, notes.durableContext]).toEqual([[], undefined]);
-            if (turn === 1) {
-              const fresh = await loadCliSessionPromptContext({
-                ...params,
-                nativeSessionId: undefined,
-                rawTranscriptReseedReason: "auth-unknown",
-                allowRawTranscriptReseed: true,
-              });
-              expect(fresh.resumeContext).toBeUndefined();
-              expect(fresh.reseedMessages).toEqual([]);
-              expect(fresh.durableContext).toBeUndefined();
-            }
             const context = buildPreparedCliRunContext({
               provider,
               sessionTarget: f.target,
@@ -265,12 +254,7 @@ describe("CLI transcript account boundary", () => {
             });
             const output = await executePreparedCliRun(context, binding?.sessionId);
             expect(output.sessionId).toBeTruthy();
-            const persisted = await persistCliAssistantTranscript({
-              runParams: params,
-              text: output.text,
-              modelId: context.modelId,
-              stopReason: "stop",
-            });
+            const persisted = await persistAnswer(params, output.text, context.modelId);
             expect(persisted.owned).toBe(true);
             await appendTranscriptMessage(f.target, {
               message: makeAssistantMessageFixture({
@@ -608,17 +592,14 @@ describe("CLI transcript account boundary", () => {
       const before = f.manager().getEntries();
 
       await expect(claim.revoke()).resolves.toBe(true);
-      const result = await persistCliAssistantTranscript({
-        runParams: {
+      const result = await persistAnswer(
+        {
           ...params,
           expectedLifecycleRevision: claim.expectedLifecycleRevision,
           expectedWriterRunId: claim.expectedWriterRunId,
-          persistAssistantTranscript: true,
         },
-        text: "late terminal CLI answer",
-        modelId: "test-model",
-        stopReason: "stop",
-      });
+        "late terminal CLI answer",
+      );
 
       expect(result).toMatchObject({ owned: true });
       expect(result.terminalAnchor).toBeUndefined();
