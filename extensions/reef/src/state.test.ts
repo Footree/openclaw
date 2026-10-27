@@ -556,9 +556,9 @@ describe("Reef SQLite state", () => {
         : store;
     };
 
-    await expect(
-      (await openStores(runtime, reefKeys())).delivered.confirm(receiptId),
-    ).rejects.toThrow("Failed persisting Reef delivered marker");
+    await expect(new ReefDeliveredStore(runtime).confirm(receiptId)).rejects.toThrow(
+      "Failed persisting Reef delivered marker",
+    );
   });
 
   it("deduplicates concurrent pending reviews and evicts only completed decisions at capacity", async () => {
