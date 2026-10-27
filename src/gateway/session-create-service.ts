@@ -759,7 +759,6 @@ async function createGatewaySessionInScope(
           personalModelSelection: params.personalModelSelection,
           operatorAuthority,
           preparedModelSelection: params.preparedModelSelection?.ref,
-          pinModelSelection: true,
         });
         if (!patched.ok) {
           return patched;
