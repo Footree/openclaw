@@ -64,7 +64,10 @@ const toolSwitch = (root: Element, id: string) => {
   return control;
 };
 
-function policyCatalog(ids: string[], profile = "full"): ToolsCatalogResult {
+function policyCatalog(
+  ids: string[],
+  profile: ToolsCatalogResult["profiles"][number]["id"] = "full",
+): ToolsCatalogResult {
   return {
     agentId: "main",
     profiles: [{ id: profile, label: profile === "full" ? "Full" : "Minimal" }],

@@ -21,8 +21,8 @@ const renderSessionActivityViewSolid = mountSolid<ReturnType<typeof props>>(
   (input) => createSolidApplicationContextProvider(input.context).wrapper,
 );
 
-function find<T extends Element = HTMLElement>(selector: string, root: ParentNode = container) {
-  return root.querySelector<T>(selector);
+function find(selector: string, root: ParentNode = container) {
+  return root.querySelector<HTMLElement>(selector);
 }
 function all<T extends Element = HTMLElement>(selector: string, root: ParentNode = container) {
   return root.querySelectorAll<T>(selector);
@@ -95,7 +95,7 @@ describe("session activity semantics", () => {
       } satisfies Record<string, [number, Date, Intl.DateTimeFormatOptions, string]>;
       const [length, last, format, label] = periods[time];
       const hourly = time === "24h";
-      const buckets = Array.from({ length }, () => (count === 0 ? 0 : 1));
+      const buckets: number[] = Array.from({ length }, () => (count === 0 ? 0 : 1));
       if (hourly) {
         buckets.fill(0);
         buckets[10] = 12;
@@ -400,7 +400,9 @@ describe("session activity people filter", () => {
     show(input);
     expect(text('[data-activity-identity="online"] h2')).toBe("online@example.test");
     expect(text(".activity-feed__identity")).toContain("Online");
-    const details = find<HTMLDetailsElement>(".activity-feed__connection-details")!;
+    const details = container.querySelector<HTMLDetailsElement>(
+      ".activity-feed__connection-details",
+    )!;
     expect(details.open).toBe(false);
     expect(text("summary", details)?.trim()).toBe("Connection details · 6");
     expect(texts(".activity-feed__connection-summary span")).toEqual([
@@ -436,7 +438,7 @@ describe("session activity people filter", () => {
       filters: { ...input.filters, personId: "other" },
       presenceViewers: [{ ...person, id: "other", identity: { type: "profile", id: "other" } }],
     });
-    expect(find<HTMLDetailsElement>("details")?.open).toBe(false);
+    expect(container.querySelector<HTMLDetailsElement>("details")?.open).toBe(false);
   });
 
   it("requires exact case when resolving a selected server profile facet", () => {
@@ -490,11 +492,11 @@ describe("session activity people filter", () => {
       onFiltersChange,
     });
 
-    const trigger = find<HTMLButtonElement>(".activity-feed__people-trigger");
+    const trigger = container.querySelector<HTMLButtonElement>(".activity-feed__people-trigger");
     trigger?.click();
     expect(trigger?.getAttribute("aria-expanded")).toBe("true");
     expect(document.activeElement).toBe(find(".activity-feed__people-popover"));
-    find<HTMLButtonElement>('[data-activity-person=""]')?.click();
+    container.querySelector<HTMLButtonElement>('[data-activity-person=""]')?.click();
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
 
     expect(onFiltersChange).toHaveBeenCalledWith({ personId: null, query: "release", time: "30d" });
@@ -512,7 +514,7 @@ describe("session activity automation grouping", () => {
 
     show({ rows: [regular, automationOne, automationTwo], onAutomationDayToggle });
 
-    const group = find<HTMLButtonElement>("[data-activity-automation-group]");
+    const group = container.querySelector<HTMLButtonElement>("[data-activity-automation-group]");
     expect(group?.textContent).toContain("2 automation sessions");
     expect(group?.getAttribute("aria-expanded")).toBe("false");
     expect(all("[data-activity-session]")).toHaveLength(1);

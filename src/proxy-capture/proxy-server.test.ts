@@ -22,6 +22,10 @@ vi.mock("./ca.js", () => ({
 
 const cleanup: Array<() => void | Promise<void>> = [];
 
+function originalMethod<Owner, Key extends keyof Owner>(owner: Owner, key: Key) {
+  return owner[key];
+}
+
 async function startProxy() {
   const testRoot = tempDirs.make("openclaw-debug-proxy-server-");
   vi.stubEnv("OPENCLAW_STATE_DIR", testRoot);
@@ -321,7 +325,7 @@ describe("startDebugProxyServer", () => {
     let bytesReadWhileBackpressured = 0;
     const drainStates: { pausedBefore: boolean | undefined; pausedAfter: boolean | undefined }[] =
       [];
-    const callOn = IncomingMessage.prototype.on;
+    const callOn = originalMethod(IncomingMessage.prototype, "on");
     vi.spyOn(IncomingMessage.prototype, "on").mockImplementation(function (
       this: IncomingMessage,
       ...args: Parameters<IncomingMessage["on"]>
@@ -337,7 +341,7 @@ describe("startDebugProxyServer", () => {
       }
       return callOn.call(this, ...args);
     });
-    const callWrite = ServerResponse.prototype.write;
+    const callWrite = originalMethod(ServerResponse.prototype, "write");
     vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
       this: ServerResponse,
       ...args: Parameters<ServerResponse["write"]>
@@ -348,7 +352,7 @@ describe("startDebugProxyServer", () => {
       }
       return accepted;
     });
-    const callEmit = ServerResponse.prototype.emit;
+    const callEmit = originalMethod(ServerResponse.prototype, "emit");
     vi.spyOn(ServerResponse.prototype, "emit").mockImplementation(function (
       this: ServerResponse,
       ...args: Parameters<ServerResponse["emit"]>

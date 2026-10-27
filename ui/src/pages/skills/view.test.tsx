@@ -39,8 +39,7 @@ function createView(dialog = false) {
   dialogRestores.push(() => container.remove());
   return {
     container,
-    query: <T extends Element = HTMLElement>(selector: string) =>
-      container.querySelector<T>(selector),
+    query: (selector: string) => container.querySelector<HTMLElement>(selector),
     text: () => normalizeText(container),
     render: (overrides: Parameters<typeof createProps>[0] = {}) => renderView(container, overrides),
   };
@@ -70,6 +69,7 @@ function searchResult(overrides: Partial<ClawHubSearchResult> = {}): ClawHubSear
   return {
     score: 1,
     slug: "pdf",
+    installRef: "@fixture/pdf",
     registry: "https://clawhub.ai",
     displayName: "Pdf",
     ...overrides,
@@ -262,7 +262,7 @@ describe("renderSkills", () => {
   });
 
   it("keeps update/install permissions independent and locks all controls during a mutation", async () => {
-    const { container, query } = createView(true);
+    const { container } = createView(true);
     const calendar = createSkill({
       skillKey: "calendar",
       name: "Calendar",
@@ -296,15 +296,17 @@ describe("renderSkills", () => {
       container,
     );
     await Promise.resolve();
-    expect(query<HTMLInputElement>("input.settings-toggle__input")?.disabled).toBe(true);
+    expect(
+      container.querySelector<HTMLInputElement>("input.settings-toggle__input")?.disabled,
+    ).toBe(true);
     expect(findButton(container, "Install calendar-cli")?.disabled).toBe(false);
     renderSkills(props, container);
     await Promise.resolve();
 
     const controls = [
       findButton(container, "Refresh"),
-      query<HTMLInputElement>("input.settings-toggle__input"),
-      query<HTMLInputElement>('input[type="password"]'),
+      container.querySelector<HTMLInputElement>("input.settings-toggle__input"),
+      container.querySelector<HTMLInputElement>('input[type="password"]'),
       findButton(container, "Install calendar-cli"),
       findButton(container, "Save key"),
     ];
@@ -318,7 +320,9 @@ describe("renderSkills", () => {
     expect(onMutation).not.toHaveBeenCalled();
 
     renderSkills({ ...props, surface: "discovery" }, container);
-    const remoteInstall = query<HTMLButtonElement>(".plugin-catalog-card__install");
+    const remoteInstall = container.querySelector<HTMLButtonElement>(
+      ".plugin-catalog-card__install",
+    );
     expect(remoteInstall?.disabled).toBe(true);
     remoteInstall?.click();
     expect(onMutation).not.toHaveBeenCalled();
@@ -388,7 +392,9 @@ describe("renderSkills", () => {
     });
     render({ detailKey: "repo-skill", onDetailClose });
     expect((await getRenderedModalDialog(container)).dialog.open).toBe(true);
-    query<HTMLButtonElement>('.skill-reader-dialog [aria-label="Close"]')!.click();
+    container
+      .querySelector<HTMLButtonElement>('.skill-reader-dialog [aria-label="Close"]')!
+      .click();
     expect(onDetailClose).toHaveBeenCalledOnce();
 
     const icon = `https://clawhub.ai/api/v1/skill-icons/${"b".repeat(64)}`;
@@ -406,7 +412,7 @@ describe("renderSkills", () => {
       "rate limited Retry",
       "Installed github",
     ]);
-    expect(query<HTMLImageElement>(".clawhub-skill-icon--detail")?.src).toBe(
+    expect(container.querySelector<HTMLImageElement>(".clawhub-skill-icon--detail")?.src).toBe(
       "blob:clawhub-detail-icon",
     );
     expect(query(".clawhub-skill-icon--profile")).toBeNull();
@@ -593,9 +599,9 @@ describe("renderSkills", () => {
     expect(text()).toContain("Review");
     expect(text()).toContain("@openclaw/agentreceipt@1.2.3");
     expect(text()).toContain("security.suspicious");
-    expect(query<HTMLAnchorElement>('a[href*="security-audit"]')?.textContent?.trim()).toBe(
-      "Full security report",
-    );
+    expect(
+      container.querySelector<HTMLAnchorElement>('a[href*="security-audit"]')?.textContent?.trim(),
+    ).toBe("Full security report");
     expect(query("#skill-detail-tab-overview")?.hasAttribute("active")).toBe(true);
     container
       .querySelector("#skill-detail-tab-card")
@@ -623,7 +629,7 @@ describe("renderSkills", () => {
     const initial = createDeferred<{ value: SkillStatusReport | null; error: string | null }>();
     const initialRead = { completion: initial.promise };
     render({ report: null });
-    const search = query<HTMLInputElement>('input[name="skills-filter"]')!;
+    const search = container.querySelector<HTMLInputElement>('input[name="skills-filter"]')!;
     search.focus();
     render({ report: null, loading: true, skillsRead: initialRead });
     expect(query('input[name="skills-filter"]')).toBe(search);
