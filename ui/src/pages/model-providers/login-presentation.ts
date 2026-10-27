@@ -50,7 +50,7 @@ export function createLoginSavingPresentation(options: {
   });
 
   return {
-    synchronize(): void {
+    synchronize: (): void => {
       const current = options.getScope();
       const next = {
         client: current.context.gateway.snapshot.client,

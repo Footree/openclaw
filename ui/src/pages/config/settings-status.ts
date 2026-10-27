@@ -182,7 +182,7 @@ export function createSettingsStatus<T>(
     read,
     scopeKey,
     requestKey: issued,
-    refresh() {
+    refresh: () => {
       readStatus(requestKey());
     },
     capture,

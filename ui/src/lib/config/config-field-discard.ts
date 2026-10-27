@@ -19,7 +19,7 @@ export function createConfigFieldDiscard(options: {
   const { state } = options;
   const pending = new Set<{ path: Array<string | number>; current: boolean }>();
   return {
-    invalidate(path?: Array<string | number>) {
+    invalidate: (path?: Array<string | number>) => {
       for (const intent of pending) {
         if (
           !path ||

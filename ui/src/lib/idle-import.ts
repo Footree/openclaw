@@ -56,7 +56,7 @@ export function createIdleImport<T>(importModule: () => Promise<T>, onLoaded?: (
       activate();
       return run();
     },
-    dispose() {
+    dispose: () => {
       active = false;
       stopOnline?.();
     },

@@ -58,7 +58,7 @@ export function createSessionRowProvenance() {
   return {
     owner,
     identity,
-    inheritRow(row: GatewaySessionRow, source: GatewaySessionRow | undefined) {
+    inheritRow: (row: GatewaySessionRow, source: GatewaySessionRow | undefined) => {
       if (observations.has(row)) {
         return row;
       }
@@ -70,11 +70,11 @@ export function createSessionRowProvenance() {
       }
       return row;
     },
-    mergeRow(
+    mergeRow: (
       current: GatewaySessionRow,
       offered: GatewaySessionRow,
       agentId?: string | null,
-    ): GatewaySessionRow {
+    ): GatewaySessionRow => {
       if (
         current === offered ||
         !identity(current, agentId) ||
@@ -164,7 +164,7 @@ export function createSessionRowProvenance() {
       return result;
     },
     observeReadRow,
-    observeClears(row: GatewaySessionRow, fields: readonly string[]) {
+    observeClears: (row: GatewaySessionRow, fields: readonly string[]) => {
       const cleared = new Set(observations.get(row)?.cleared);
       const values: Record<string, unknown> = row;
       for (const field of fields) {

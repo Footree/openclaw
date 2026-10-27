@@ -21,7 +21,7 @@ export function createTranscriptSearch(host: {
   }
   return {
     reset,
-    async run() {
+    run: async () => {
       const query = state.transcriptSearchQuery.trim();
       if (!query) {
         reset("");

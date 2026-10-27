@@ -301,7 +301,7 @@ export function createModelProviderProfileActions(options: {
       pendingOrders.clear();
       options.setOrders({});
     },
-    setOrder(cardId: string, provider: string, profileIds: string[] | null): void {
+    setOrder: (cardId: string, provider: string, profileIds: string[] | null): void => {
       const providerStatus = options
         .getData()
         ?.authStatus?.providers.find((candidate) => candidate.provider === provider);
