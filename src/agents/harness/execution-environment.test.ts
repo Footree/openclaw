@@ -1,8 +1,15 @@
 import { expect, it } from "vitest";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
+import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
+import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
+  assertAgentHarnessExecutionEnvironment,
   resolvePluginHarnessPolicyToolsAllow,
   preparePluginHarnessToolPolicies,
 } from "./execution-environment.js";
+import type { AgentHarness } from "./types.js";
 
 const input = { sessionId: "policy-session", provider: "fixture", modelId: "fixture-model" };
 type PolicyParams = Partial<Parameters<typeof preparePluginHarnessToolPolicies>[0]>;
@@ -117,3 +124,46 @@ it.each([true, false])(
     });
   },
 );
+
+it.each([
+  ["an owner chat with unset modes", {}, true, true],
+  ["a guest chat with unset modes", {}, false, false],
+  ["an owner-spawned subagent", { spawnedBySenderIsOwner: true }, false, true],
+  ["an explicit Full Access chat", { permissionMode: "full", sandboxMode: "off" }, false, true],
+  ["an owner chat with explicit workspace mode", { permissionMode: "workspace" }, true, "refused"],
+] as const)("applies remembered agent consent to %s", async (_name, entry, owner, expected) => {
+  await withOpenClawTestState({ label: "remembered-native-consent" }, async (state) => {
+    const sessionKey = "agent:main:telegram:group:-100:topic:1";
+    const config: OpenClawConfig = {
+      agents: { entries: { main: { nativeRuntimeConsent: ["fixture"] } } },
+    };
+    setRuntimeConfigSnapshot(config);
+    const storePath = resolveSessionStorePathCore(undefined, { agentId: "main", env: state.env });
+    await replaceSessionEntry(
+      { agentId: "main", sessionKey, storePath, env: state.env },
+      { sessionId: "chat", updatedAt: 1, ...entry },
+    );
+    const harness: AgentHarness = {
+      id: "fixture",
+      label: "Fixture",
+      executionEnvironment: "host-only",
+      supports: () => ({ supported: true }),
+      runAttempt: async () => {
+        throw new Error("unused");
+      },
+    };
+    const preflight = assertAgentHarnessExecutionEnvironment(harness, {
+      config,
+      agentId: "main",
+      sessionKey,
+      sessionId: "chat",
+      senderIsOwner: owner,
+      ...("permissionMode" in entry ? { permissionMode: entry.permissionMode } : {}),
+    });
+    if (expected === "refused") {
+      await expect(preflight).rejects.toThrow("requires Full access");
+      return;
+    }
+    await expect(preflight).resolves.toBe(expected);
+  });
+});

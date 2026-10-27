@@ -44,3 +44,20 @@ export function rememberNativeRuntimeConsent(
     },
   };
 }
+
+/**
+ * Remembered agent consent covers an owner's chat that has not chosen a narrower mode itself:
+ * its unset modes count as Full access with sandbox off. A sandbox from agent config still applies,
+ * and an explicit chat mode is never replaced.
+ */
+export function withOwnerNativeConsentModes<
+  T extends { permissionMode?: string; sandboxMode?: string },
+>(entry: T, ownerTurn: boolean, sandboxed: boolean): T {
+  return ownerTurn && !sandboxed
+    ? {
+        ...entry,
+        permissionMode: entry.permissionMode ?? "full",
+        sandboxMode: entry.sandboxMode ?? "off",
+      }
+    : entry;
+}

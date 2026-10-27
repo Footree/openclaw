@@ -1,6 +1,9 @@
 import type { ProviderModelRef as ModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import type { AgentRuntimeRestrictionErrorDetails } from "../../../packages/gateway-protocol/src/agent-runtime-restriction-error-details.js";
-import { hasRememberedNativeRuntimeConsent } from "../../config/native-runtime-consent.js";
+import {
+  hasRememberedNativeRuntimeConsent,
+  withOwnerNativeConsentModes,
+} from "../../config/native-runtime-consent.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
   captureSessionActorStorageOwner,
@@ -188,6 +191,7 @@ type ExecutionEnvironmentParams = Pick<
   | "toolsAllow"
   | "disableTools"
   | "swarmCollector"
+  | "senderIsOwner"
 >;
 
 /** Revalidates execution policy and returns whether this run has native permission consent. */
@@ -238,6 +242,7 @@ export async function assertAgentHarnessExecutionEnvironment(
     return assertPreparedAgentHarnessExecutionEnvironment(
       harness,
       params,
+      agentId,
       entry,
       source !== undefined,
       resolveSandboxRuntimeStatus({ ...runtimeParams, preparedSessionEntry: entry ?? null }),
@@ -250,6 +255,7 @@ export async function assertAgentHarnessExecutionEnvironment(
       assertPreparedAgentHarnessExecutionEnvironment(
         harness,
         params,
+        agentId,
         entry,
         source !== undefined,
         runtime,
@@ -260,6 +266,7 @@ export async function assertAgentHarnessExecutionEnvironment(
 function assertPreparedAgentHarnessExecutionEnvironment(
   harness: AgentHarness,
   params: ExecutionEnvironmentParams,
+  agentId: string,
   entry:
     | Pick<
         SessionEntry,
@@ -273,28 +280,24 @@ function assertPreparedAgentHarnessExecutionEnvironment(
         | "execNode"
         | "execCwd"
         | "nativeRuntimeConsent"
+        | "spawnedBySenderIsOwner"
       >
     | undefined,
   nativeSource: boolean,
   runtime: ReturnType<typeof resolveSandboxRuntimeStatus>,
 ): boolean {
-  const remembered = hasRememberedNativeRuntimeConsent(
-    params.config,
-    resolveSessionAgentId({
-      config: params.config,
-      agentId: params.agentId,
-      sessionKey: params.sessionKey,
-    }),
-    harness.id,
-  );
+  const remembered = hasRememberedNativeRuntimeConsent(params.config, agentId, harness.id);
   // Per-chat consent belongs to this incarnation; agent consent authorizes the selected harness.
+  // A subagent continues the owner turn that spawned it.
+  const owner = params.senderIsOwner === true || entry?.spawnedBySenderIsOwner === true;
+  const modes = entry && withOwnerNativeConsentModes(entry, owner, runtime.sandboxed);
   const nativeRuntimeConsent =
     entry?.sessionId === params.sessionId &&
     (entry.agentRuntimeOverride === harness.id || remembered) &&
-    entry.permissionMode === "full" &&
-    params.permissionMode === "full" &&
+    modes?.permissionMode === "full" &&
+    (params.permissionMode ?? modes.permissionMode) === "full" &&
     !params.sandbox?.enabled &&
-    entry.sandboxMode === "off" &&
+    modes.sandboxMode === "off" &&
     !params.disableTools &&
     params.toolsAllow === undefined &&
     !params.swarmCollector
