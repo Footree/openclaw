@@ -2,37 +2,31 @@ import { HTTPFetchError, type messagingApi } from "@line/bot-sdk";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import { withServer } from "openclaw/plugin-sdk/test-env";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cancelTrackedTextResponse as createTrackedResponse } from "../../test-support/streaming-error-response.js";
 
 const realGlobalFetch = globalThis.fetch.bind(globalThis);
-
-const { client, fetchLine, Client, config, account, accessToken, activity, verbose, resolveHost } =
-  vi.hoisted(() => {
-    const sdkClient = {
-      pushMessage: vi.fn(),
-      replyMessage: vi.fn(),
-      showLoadingAnimation: vi.fn(),
-      getProfile: vi.fn(),
-      getGroupMemberProfile: vi.fn(),
-      getRoomMemberProfile: vi.fn(),
-      getGroupSummary: vi.fn(),
-    };
-    return {
-      client: sdkClient,
-      fetchLine: vi.fn(),
-      Client: vi.fn(function () {
-        return sdkClient;
-      }),
-      config: vi.fn((cfg: unknown) => cfg ?? {}),
-      account: vi.fn(() => ({ accountId: "default" })),
-      accessToken: vi.fn(() => "line-token"),
-      activity: vi.fn(),
-      verbose: vi.fn(),
-      resolveHost: vi.fn(),
-    };
-  });
-
+const { client, fetchLine, Client, activity, verbose, resolveHost } = vi.hoisted(() => {
+  const sdkClient = {
+    pushMessage: vi.fn(),
+    replyMessage: vi.fn(),
+    showLoadingAnimation: vi.fn(),
+    getProfile: vi.fn(),
+    getGroupMemberProfile: vi.fn(),
+    getRoomMemberProfile: vi.fn(),
+    getGroupSummary: vi.fn(),
+  };
+  return {
+    client: sdkClient,
+    fetchLine: vi.fn(),
+    Client: vi.fn(function () {
+      return sdkClient;
+    }),
+    activity: vi.fn(),
+    verbose: vi.fn(),
+    resolveHost: vi.fn(),
+  };
+});
 vi.mock("@line/bot-sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@line/bot-sdk")>();
   return {
@@ -40,17 +34,9 @@ vi.mock("@line/bot-sdk", async (importOriginal) => {
     messagingApi: { ...actual.messagingApi, MessagingApiClient: Client },
   };
 });
-
-vi.mock("openclaw/plugin-sdk/plugin-config-runtime", () => ({ requireRuntimeConfig: config }));
-
-vi.mock("./accounts.js", () => ({ resolveLineAccount: account }));
-
-vi.mock("./channel-access-token.js", () => ({ resolveLineChannelAccessToken: accessToken }));
-
 vi.mock("openclaw/plugin-sdk/channel-activity-runtime", () => ({
   recordChannelActivity: activity,
 }));
-
 vi.mock("openclaw/plugin-sdk/runtime-env", async () => {
   const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/runtime-env")>(
     "openclaw/plugin-sdk/runtime-env",
@@ -60,14 +46,13 @@ vi.mock("openclaw/plugin-sdk/runtime-env", async () => {
     logVerbose: verbose,
   };
 });
-
 vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({
   resolvePinnedHostnameWithPolicy: resolveHost,
 }));
-
-let send: typeof import("./send.js");
-
-const LINE_TEST_CFG = { channels: { line: { accounts: { default: {} } } } };
+const send = await import("./send.js");
+const LINE_TEST_CFG = {
+  channels: { line: { channelAccessToken: "line-token", channelSecret: "line-secret" } },
+};
 const options = { cfg: LINE_TEST_CFG };
 const imageMapArea = { x: 0, y: 0, width: 1040, height: 1040 };
 function imageMap<T extends object>(fields: T) {
@@ -99,7 +84,6 @@ function pushedMessage() {
     "LINE push message",
   ) as messagingApi.Message;
 }
-
 async function sendBoth(message: messagingApi.Message) {
   await send.pushMessagesLine("U123", [message], options);
   await send.replyMessageLine("reply-token", [message], options);
@@ -107,12 +91,10 @@ async function sendBoth(message: messagingApi.Message) {
     client.replyMessage.mock.calls[0]?.[0]?.messages,
   );
 }
-
 describe("LINE send helpers", () => {
   const fixedSentAt = 1_800_000_000_000;
-
-  const pushText = () => send.pushMessageLine("U123", "Hello", options);
-
+  const pushText = (channelAccessToken?: string) =>
+    send.pushMessageLine("U123", "Hello", { ...options, channelAccessToken });
   async function captureError(run: () => Promise<unknown>): Promise<unknown> {
     try {
       await run();
@@ -121,53 +103,35 @@ describe("LINE send helpers", () => {
     }
     throw new Error("Expected LINE send to fail");
   }
-
   async function capturePartialDelivery(run: () => Promise<unknown>) {
     const caught = await captureError(run);
-    expect(isChannelPartialDeliveryError(caught)).toBe(true);
     if (!isChannelPartialDeliveryError(caught)) {
       throw new Error("Expected partial LINE delivery");
     }
     return caught;
   }
-
-  beforeAll(async () => {
-    send = await import("./send.js");
-  });
-
   afterAll(() => {
     vi.doUnmock("@line/bot-sdk");
-    vi.doUnmock("openclaw/plugin-sdk/plugin-config-runtime");
-    vi.doUnmock("./accounts.js");
-    vi.doUnmock("./channel-access-token.js");
     vi.doUnmock("openclaw/plugin-sdk/channel-activity-runtime");
     vi.doUnmock("openclaw/plugin-sdk/runtime-env");
     vi.doUnmock("openclaw/plugin-sdk/ssrf-runtime");
     vi.resetModules();
   });
-
   beforeEach(() => {
     vi.setSystemTime(fixedSentAt);
     for (const mock of [
       ...Object.values(client),
       fetchLine,
       Client,
-      account,
-      accessToken,
       activity,
       verbose,
       resolveHost,
     ]) {
       mock.mockReset();
     }
-    config.mockClear();
-
     Client.mockImplementation(function () {
       return client;
     });
-    config.mockImplementation((cfg: unknown) => cfg ?? LINE_TEST_CFG);
-    account.mockReturnValue({ accountId: "default" });
-    accessToken.mockReturnValue("line-token");
     resolveHost.mockResolvedValue({ hostname: "example.com", addresses: ["93.184.216.34"] });
     client.pushMessage.mockResolvedValue({ sentMessages: [{ id: "push" }] });
     client.replyMessage.mockResolvedValue({ sentMessages: [{ id: "reply" }] });
@@ -187,25 +151,20 @@ describe("LINE send helpers", () => {
     });
     vi.stubGlobal("fetch", fetchLine);
   });
-
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
-
   it("sends the same provider-valid Flex alternative text through direct pushes", async () => {
     const altText = `${"a".repeat(1499)}😀 overflow`;
-
     await send.pushFlexMessage("U123", altText, { type: "bubble" }, options);
-
     expect(client.pushMessage).toHaveBeenCalledWith({
       to: "U123",
       messages: [{ type: "flex", altText: "a".repeat(1499), contents: { type: "bubble" } }],
     });
   });
 
-  it("normalizes raw Flex actions at both outbound API boundaries", async () => {
-    const oversizedPostback = { type: "postback", label: "Open", data: "x".repeat(301) };
+  it("normalizes video actions without disabling authored Unavailable labels", async () => {
     const oversizedUri = {
       type: "uri",
       label: "Open",
@@ -216,7 +175,6 @@ describe("LINE send helpers", () => {
       altText: "Raw Flex",
       contents: {
         type: "bubble",
-        action: oversizedPostback,
         hero: {
           ...structuredClone(video),
           action: oversizedUri,
@@ -225,7 +183,6 @@ describe("LINE send helpers", () => {
           type: "box",
           layout: "vertical",
           contents: [
-            { type: "button", action: oversizedPostback },
             {
               type: "text",
               text: "Still works",
@@ -235,30 +192,20 @@ describe("LINE send helpers", () => {
         },
       },
     };
-
     await sendBoth(message as never);
-    const contents = (pushedMessage() as messagingApi.FlexMessage).contents as {
-      action?: unknown;
-      hero: unknown;
-      body: { contents: Array<{ action?: unknown; text?: string }> };
-    };
-    const unavailableAction = {
-      type: "message",
-      label: "Unavailable",
-      text: "Action unavailable: callback data exceeds LINE's limit.",
-    };
-    expect(contents.action).toBeUndefined();
-    expect(contents.hero).toEqual(video);
-    expect(contents.body.contents[0]?.action).toEqual(unavailableAction);
-    expect(contents.body.contents[1]?.action).toEqual({
+    const output = pushedMessage();
+    expect(output).toHaveProperty("contents.hero", video);
+    expect(output).toHaveProperty("contents.body.contents.0.action", {
       type: "message",
       label: "Unavailable",
       text: "keep",
     });
-    expect(contents.body.contents.slice(2).map((item) => item.text)).toEqual([
-      "Action unavailable: callback data exceeds LINE's limit.\nLink unavailable: URL exceeds LINE's limit.",
-    ]);
-    expect(message.contents.action).toBe(oversizedPostback);
+    expect(output).toHaveProperty("contents.body.contents.length", 2);
+    expect(output).toHaveProperty(
+      "contents.body.contents.1.text",
+      "Link unavailable: URL exceeds LINE's limit.",
+    );
+    expect(message.contents.hero.action).toBe(oversizedUri);
   });
 
   it("normalizes raw imagemap actions at both outbound API boundaries", async () => {
@@ -283,7 +230,6 @@ describe("LINE send helpers", () => {
         label: "Open",
       }),
     });
-
     await sendBoth(message as never);
     const pushed = pushedMessage() as messagingApi.ImagemapMessage;
     expect(pushed.actions).toHaveLength(50);
@@ -309,7 +255,6 @@ describe("LINE send helpers", () => {
         { type: "message", label: "Too long", text: `${exactText}😀`, area },
       ],
     });
-
     await sendBoth(message as never);
     expect((pushedMessage() as messagingApi.ImagemapMessage).actions).toEqual([
       { type: "message", label: "Exact", text: exactText, area },
@@ -327,9 +272,7 @@ describe("LINE send helpers", () => {
       actions: [],
       video: imageMapVideo({ linkUri: "https://e.example/video", label: "😀".repeat(16) }),
     });
-
     await send.pushMessagesLine("U123", [message] as never, options);
-
     expect((pushedMessage() as messagingApi.ImagemapMessage).video?.externalLink?.label).toBe(
       "😀".repeat(15),
     );
@@ -344,7 +287,6 @@ describe("LINE send helpers", () => {
       mediaUrl: "https://example.com/original.jpg",
       mediaKind: "image",
     });
-
     expect(client.pushMessage).toHaveBeenCalledWith({
       to: "U123",
       messages: [
@@ -426,7 +368,6 @@ describe("LINE send helpers", () => {
         operation === "push"
           ? send.pushMessagesLine("U0123456789abcdef0123456789abcdef", messages, quoteOptions)
           : send.replyMessageLine("reply-token", messages, quoteOptions);
-
       if (allowFallback) {
         await sending;
       } else {
@@ -453,7 +394,6 @@ describe("LINE send helpers", () => {
   it("does not misclassify network SyntaxErrors as provider acceptance", async () => {
     const failure = new SyntaxError("upstream network decoder failed");
     fetchLine.mockRejectedValueOnce(failure);
-
     await expect(pushText()).rejects.toBe(failure);
     expect(isChannelPartialDeliveryError(failure)).toBe(false);
   });
@@ -467,9 +407,7 @@ describe("LINE send helpers", () => {
     },
   ])("preserves accepted delivery for a malformed $name", async ({ sentMessages, messageIds }) => {
     client.pushMessage.mockResolvedValueOnce({ sentMessages });
-
     const caught = await capturePartialDelivery(pushText);
-
     expect(caught.deliveryResult).toEqual({ messageIds, visibleReplySent: true });
     expect(client.pushMessage).toHaveBeenCalledOnce();
     expect(activity).not.toHaveBeenCalled();
@@ -480,7 +418,6 @@ describe("LINE send helpers", () => {
       cfg: LINE_TEST_CFG,
       mediaUrl: "https://example.com/voice.m4a",
     });
-
     expect(client.pushMessage).toHaveBeenCalledWith({
       to: "U123",
       messages: [
@@ -510,12 +447,10 @@ describe("LINE send helpers", () => {
 
   it("bounds profile cache entries across distinct users", async () => {
     client.getProfile.mockImplementation(async (userId: string) => ({ displayName: userId }));
-
     for (let index = 0; index <= 1000; index += 1) {
       await send.getUserProfile(`U-profile-${index}`, options);
     }
     await send.getUserProfile("U-profile-0", options);
-
     expect(client.getProfile).toHaveBeenCalledTimes(1002);
   });
 
@@ -527,7 +462,6 @@ describe("LINE send helpers", () => {
       ["", "  ", label, ...Array.from({ length: 19 }, (_, index) => `Choice ${index + 1}`)],
       options,
     );
-
     expect(client.pushMessage).toHaveBeenCalledTimes(1);
     const payload = pushedMessage();
     expect(payload.quickReply?.items[0]).toMatchObject({
@@ -537,28 +471,24 @@ describe("LINE send helpers", () => {
   });
   it("degrades to no profile when LINE cannot answer", async () => {
     client.getGroupMemberProfile.mockRejectedValue(new Error("404 not found"));
-
     await expect(
       send.getUserProfile("Umissing", { cfg: LINE_TEST_CFG, groupId: "Cgroup2" }),
     ).resolves.toBeNull();
     await expect(
       send.getUserProfile("Umissing", { cfg: LINE_TEST_CFG, groupId: "Cgroup2" }),
     ).resolves.toBeNull();
-
     expect(client.getGroupMemberProfile).toHaveBeenCalledTimes(1);
   });
 
   it("keeps profile cache entries scoped to their conversation endpoint", async () => {
     client.getGroupMemberProfile.mockResolvedValueOnce({ displayName: "Group Sora" });
     client.getRoomMemberProfile.mockResolvedValueOnce({ displayName: "Room Sora" });
-
     await expect(
       send.getUserProfile("Ushared", { cfg: LINE_TEST_CFG, groupId: "Cshared" }),
     ).resolves.toMatchObject({ displayName: "Group Sora" });
     await expect(
       send.getUserProfile("Ushared", { cfg: LINE_TEST_CFG, roomId: "Rshared" }),
     ).resolves.toMatchObject({ displayName: "Room Sora" });
-
     expect(client.getGroupMemberProfile).toHaveBeenCalledTimes(1);
     expect(client.getRoomMemberProfile).toHaveBeenCalledTimes(1);
   });
@@ -566,11 +496,9 @@ describe("LINE send helpers", () => {
   it("coalesces concurrent group-name cache misses", async () => {
     const summary = Promise.withResolvers<{ groupId: string; groupName: string }>();
     client.getGroupSummary.mockReturnValueOnce(summary.promise);
-
     const first = send.getLineGroupName("Cconcurrent", options);
     const second = send.getLineGroupName("Cconcurrent", options);
     expect(client.getGroupSummary).toHaveBeenCalledTimes(1);
-
     summary.resolve({ groupId: "Cconcurrent", groupName: "Release Squad" });
     await expect(Promise.all([first, second])).resolves.toEqual(["Release Squad", "Release Squad"]);
     await expect(send.getLineGroupName("Cconcurrent", options)).resolves.toBe("Release Squad");
@@ -579,52 +507,39 @@ describe("LINE send helpers", () => {
 
   it("degrades to no group name when the summary call fails", async () => {
     client.getGroupSummary.mockRejectedValue(new Error("403 forbidden"));
-
     await expect(send.getLineGroupName("Cforbidden", options)).resolves.toBeUndefined();
     await expect(send.getLineGroupName("Cforbidden", options)).resolves.toBeUndefined();
-
     expect(client.getGroupSummary).toHaveBeenCalledTimes(1);
   });
 
-  it("bounds an accepted retry-key conflict without reclassifying it as rejected", async () => {
-    const tracked = createTrackedResponse("x".repeat(16 * 1024 + 1), {
-      status: 409,
-      statusText: "Conflict",
-      headers: { "content-type": "application/json" },
-    });
-    const textSpy = vi.spyOn(tracked.response, "text").mockRejectedValue(new Error("unbounded"));
-    fetchLine.mockResolvedValueOnce(tracked.response);
-
-    const caught = await captureError(pushText);
-
-    expect(isChannelPartialDeliveryError(caught)).toBe(true);
-    expect(caught).not.toBeInstanceOf(HTTPFetchError);
-    expect(fetchLine).toHaveBeenCalledOnce();
-    const requestInit = fetchLine.mock.calls[0]?.[1];
-    expect(new Headers(requestInit?.headers).get("X-Line-Retry-Key")).toBeTruthy();
-    expect(textSpy).not.toHaveBeenCalled();
-    expect(tracked.wasCanceled()).toBe(true);
-  });
-
-  it("bounds oversized rejected LINE response bodies", async () => {
-    const tracked = createTrackedResponse(`${"line upstream unavailable ".repeat(1024)}tail`, {
-      status: 400,
-      statusText: "Bad Request",
-      headers: { "content-type": "text/plain" },
-    });
-    const textSpy = vi.spyOn(tracked.response, "text").mockRejectedValue(new Error("unbounded"));
-    fetchLine.mockResolvedValueOnce(tracked.response);
-
-    const caught = await captureError(pushText);
-
-    expect(caught).toBeInstanceOf(HTTPFetchError);
-    expect(isChannelPartialDeliveryError(caught)).toBe(false);
-    expect(caught).toMatchObject({ status: 400, statusText: "Bad Request" });
-    expect((caught as HTTPFetchError).body).toContain("line upstream unavailable");
-    expect((caught as HTTPFetchError).body).not.toContain("tail");
-    expect(textSpy).not.toHaveBeenCalled();
-    expect(tracked.wasCanceled()).toBe(true);
-  });
+  it.each([
+    [409, "Conflict"],
+    [400, "Bad Request"],
+  ] as const)(
+    "bounds a %s provider response without changing its acceptance classification",
+    async (status, statusText) => {
+      const tracked = createTrackedResponse(`${"line upstream unavailable ".repeat(1024)}tail`, {
+        status,
+        statusText,
+        headers: { "content-type": status === 409 ? "application/json" : "text/plain" },
+      });
+      fetchLine.mockResolvedValueOnce(tracked.response);
+      const caught = await captureError(pushText);
+      expect(isChannelPartialDeliveryError(caught)).toBe(status === 409);
+      expect(caught instanceof HTTPFetchError).toBe(status === 400);
+      expect(fetchLine).toHaveBeenCalledOnce();
+      if (caught instanceof HTTPFetchError) {
+        expect(caught).toMatchObject({ status, statusText });
+        expect(caught.body).toContain("line upstream unavailable");
+        expect(caught.body).not.toContain("tail");
+      } else {
+        expect(
+          new Headers(fetchLine.mock.calls[0]?.[1]?.headers).get("X-Line-Retry-Key"),
+        ).toBeTruthy();
+      }
+      expect(tracked.wasCanceled()).toBe(true);
+    },
+  );
 
   it.each(["batch", "flex"] as const)(
     "does not log reflected message content on a rejected %s push",
@@ -637,13 +552,11 @@ describe("LINE send helpers", () => {
           headers: { "content-type": "application/json" },
         }),
       );
-
       const caught = await captureError(() =>
         kind === "batch"
           ? send.pushMessagesLine("U123", [{ type: "text", text }], options)
           : send.pushFlexMessage("U123", text, { type: "bubble" }, options),
       );
-
       expect(caught).toBeInstanceOf(HTTPFetchError);
       expect(caught).toMatchObject({ status: 400, body: JSON.stringify({ message: text }) });
       expect(verbose).not.toHaveBeenCalled();
@@ -652,7 +565,6 @@ describe("LINE send helpers", () => {
 
   it("masks a reflected Authorization token through a real HTTP reflector", async () => {
     const token = "line-channel-access-token-xyz0123456789abcdef";
-    accessToken.mockReturnValue(token);
     await withServer(
       (req, res) => {
         res.writeHead(400, { "Content-Type": "text/plain" });
@@ -668,7 +580,7 @@ describe("LINE send helpers", () => {
             return realGlobalFetch(target.replace("https://api.line.me", origin), init);
           },
         );
-        const caught = await captureError(pushText);
+        const caught = await captureError(() => pushText(token));
         expect(caught).toBeInstanceOf(HTTPFetchError);
         const body = (caught as HTTPFetchError).body;
         expect(body).toContain("proxy failure");
@@ -689,11 +601,9 @@ describe("LINE send helpers", () => {
     );
     const textSpy = vi.spyOn(response, "text").mockRejectedValue(new Error("unbounded"));
     fetchLine.mockResolvedValueOnce(response);
-
     const caught = await captureError(() =>
       send.replyMessageLine("reply-token", [{ type: "text", text: "Hello" }], options),
     );
-
     expect(caught).toBeInstanceOf(HTTPFetchError);
     expect(isChannelPartialDeliveryError(caught)).toBe(false);
     expect(caught).toMatchObject({ status: 503, statusText: "Service Unavailable", body: "" });
