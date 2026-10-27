@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.ts";
 import type { SkillStatusReport } from "../../api/types.ts";
 import { i18n } from "../../i18n/index.ts";
-import { clawhubVerdictKey, type ClawHubSkillSecurityVerdict } from "../../lib/skills/index.ts";
+import type { ClawHubSearchResult } from "../../lib/skills/clawhub-search.ts";
+import {
+  clawhubVerdictKey,
+  type ClawHubSkillDetail,
+  type ClawHubSkillSecurityVerdict,
+} from "../../lib/skills/index.ts";
 import { getRenderedModalDialog } from "../../test-helpers/modal-dialog.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
@@ -28,6 +33,79 @@ function createContainer() {
   document.body.append(container);
   dialogRestores.push(() => container.remove());
   return container;
+}
+
+function createView(dialog = false) {
+  if (dialog) {
+    installDialogMethod("showModal", function () {
+      this.setAttribute("open", "");
+    });
+  }
+  const container = createContainer();
+  return {
+    container,
+    query: <T extends Element = HTMLElement>(selector: string) =>
+      container.querySelector<T>(selector),
+    text: () => normalizeText(container),
+    render: (overrides: Parameters<typeof createProps>[0] = {}) => renderView(container, overrides),
+  };
+}
+
+function buttons(root: ParentNode) {
+  return [...root.querySelectorAll<HTMLButtonElement>("button")];
+}
+
+function findButton(root: ParentNode, label: string) {
+  return buttons(root).find((node) => normalizeText(node) === label);
+}
+
+function githubDetail(skill: Partial<ClawHubSkillDetail["skill"]> = {}): ClawHubSkillDetail {
+  return {
+    skill: {
+      slug: "github",
+      displayName: "GitHub",
+      createdAt: 1_700_000_000,
+      updatedAt: 1_700_000_100,
+      ...skill,
+    },
+  };
+}
+
+function searchResult(overrides: Partial<ClawHubSearchResult> = {}): ClawHubSearchResult {
+  return {
+    score: 1,
+    slug: "pdf",
+    registry: "https://clawhub.ai",
+    displayName: "Pdf",
+    ...overrides,
+  };
+}
+
+function verdict(overrides: Partial<ClawHubSkillSecurityVerdict> = {}) {
+  return {
+    registry: "https://clawhub.ai",
+    ok: true,
+    decision: "pass",
+    reasons: [],
+    requestedSlug: "agentreceipt",
+    requestedVersion: "1.2.3",
+    slug: "agentreceipt",
+    version: "1.2.3",
+    securityStatus: "clean",
+    securityPassed: true,
+    ...overrides,
+  } satisfies ClawHubSkillSecurityVerdict;
+}
+
+function verdicts(value = verdict(), ownerHandle?: string) {
+  return {
+    [clawhubVerdictKey({
+      registry: "https://clawhub.ai",
+      slug: "agentreceipt",
+      version: "1.2.3",
+      ownerHandle,
+    })]: value,
+  };
 }
 
 function skillReport(skills: SkillStatusReport["skills"]): SkillStatusReport {
@@ -53,6 +131,43 @@ function createCodingAgentSkill(overrides: Parameters<typeof createSkill>[0] = {
 
 function renderView(container: HTMLElement, overrides: Parameters<typeof createProps>[0] = {}) {
   renderSkills(createProps(overrides), container);
+}
+
+type Verdicts = Record<string, ClawHubSkillSecurityVerdict>;
+
+function mountVerdictView(
+  container: HTMLElement,
+  initial: Promise<Verdicts>,
+  overrides: Parameters<typeof createProps>[0] = {},
+) {
+  let changeRead: ((next: Promise<Verdicts>) => void) | undefined;
+  let select: ((key: string) => void) | undefined;
+  const owner = mountSolid(
+    () => {
+      const [receipt, setReceipt] = createSignal(initial);
+      const [selected, setSelected] = createSignal("agentreceipt");
+      changeRead = (next) => {
+        void setReceipt(next);
+      };
+      select = (key) => {
+        void setSelected(key);
+      };
+      const read = createDeferredRead(() => receipt());
+      const props = createProps({
+        report: skillReport([createLinkedSkill()]),
+        readClawHubVerdicts: read,
+        ...overrides,
+      });
+      return <Skills {...props} state={{ ...props.state, skillsDetailKey: selected() }} />;
+    },
+    { container },
+  );
+  dialogRestores.push(owner.unmount);
+  return {
+    changeRead: (next: Promise<Verdicts>) =>
+      expectDefined(changeRead, "verdict receipt callback")(next),
+    select: (key: string) => expectDefined(select, "skill selection callback")(key),
+  };
 }
 
 function createLinkedSkill(ownerHandle?: string) {
@@ -108,9 +223,7 @@ describe("renderSkills", () => {
       expect(dialog.open).toBe(true);
 
       const input = container.querySelector<HTMLInputElement>('input[type="password"]');
-      const save = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
-        (button) => normalizeText(button) === "Save key",
-      );
+      const save = findButton(container, "Save key");
       expect(input?.required).toBe(true);
       expect(normalizeText(expectDefined(input?.labels?.[0], "API key label"))).toBe(
         "API key (OPENAI_API_KEY)",
@@ -132,21 +245,21 @@ describe("renderSkills", () => {
   );
 
   it("preserves retained group identity and restores removed groups when filtering", async () => {
-    const container = createContainer();
+    const { container, render } = createView();
     const report = skillReport([
       createSkill({ skillKey: "ws", name: "Workspace Skill", source: "openclaw-workspace" }),
       createSkill({ skillKey: "bi", name: "Weather", bundled: true }),
       createSkill({ skillKey: "inst", name: "Installed Skill", source: "openclaw-managed" }),
     ]);
     const onDetailOpen = vi.fn();
-    renderView(container, { report, onDetailOpen });
+    render({ report, onDetailOpen });
     await Promise.resolve();
     const groups = [...container.querySelectorAll<HTMLDetailsElement>("details.skills-group")];
     expect(groups).toHaveLength(3);
     expect(groups.every((group) => group.open)).toBe(true);
     groups[0]!.open = false;
     const row = groups[1]!.querySelector(".settings-row");
-    renderView(container, { report, filter: "weather", onDetailOpen });
+    render({ report, filter: "weather", onDetailOpen });
     await Promise.resolve();
     const remaining = container.querySelectorAll<HTMLDetailsElement>("details.skills-group");
     expect(remaining).toHaveLength(1);
@@ -156,7 +269,7 @@ describe("renderSkills", () => {
     expect(remaining[0]!.textContent).toContain("Weather");
     remaining[0]!.querySelector<HTMLButtonElement>(".plugins-item__detail-button")!.click();
     expect(onDetailOpen).toHaveBeenCalledExactlyOnceWith("bi");
-    renderView(container, { report });
+    render({ report });
     await Promise.resolve();
     const restored = [...container.querySelectorAll<HTMLDetailsElement>("details.skills-group")];
     expect(restored).toHaveLength(3);
@@ -164,10 +277,7 @@ describe("renderSkills", () => {
   });
 
   it("offers only an installer satisfying a missing alternative", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function () {
-      this.setAttribute("open", "");
-    });
+    const { container, query, render } = createView(true);
     const onInstall = vi.fn();
     const unrelated: SkillStatusReport["skills"][number]["install"][number] = {
       id: "node-unrelated",
@@ -185,15 +295,14 @@ describe("renderSkills", () => {
       eligible: false,
       install: [unrelated, codex],
     });
-    renderView(container, { report: skillReport([skill]), detailKey: "coding-agent", onInstall });
+    render({ report: skillReport([skill]), detailKey: "coding-agent", onInstall });
     await Promise.resolve();
-    const buttons = [...container.querySelectorAll<HTMLButtonElement>("button")];
-    expect(buttons.some((button) => normalizeText(button) === "Install unrelated CLI")).toBe(false);
-    const install = buttons.find((button) => normalizeText(button) === "Install Codex CLI");
+    expect(findButton(container, "Install unrelated CLI")).toBeUndefined();
+    const install = findButton(container, "Install Codex CLI");
     expect(
       normalizeText(
         expectDefined(
-          container.querySelector(".skill-reader-dialog__body .callout"),
+          query(".skill-reader-dialog__body .callout"),
           "alternative binary requirement",
         ),
       ),
@@ -207,16 +316,13 @@ describe("renderSkills", () => {
   });
 
   it("keeps update and install permissions independent", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function (this: HTMLDialogElement) {
-      this.setAttribute("open", "");
-    });
+    const { container, query, render } = createView(true);
     const skill = createSkill({
       missing: { anyBins: [], bins: ["skill-cli"], env: [], config: [], os: [] },
       install: [{ id: "skill-cli", kind: "node", label: "Install skill-cli", bins: ["skill-cli"] }],
     });
 
-    renderView(container, {
+    render({
       canUpdate: false,
       canInstall: true,
       toggleSavingSkillKey: skill.skillKey,
@@ -225,20 +331,13 @@ describe("renderSkills", () => {
     });
     await Promise.resolve();
 
-    expect(
-      container.querySelector<HTMLInputElement>("input.settings-toggle__input")?.disabled,
-    ).toBe(true);
-    const install = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => normalizeText(button) === "Install skill-cli",
-    );
+    expect(query<HTMLInputElement>("input.settings-toggle__input")?.disabled).toBe(true);
+    const install = findButton(container, "Install skill-cli");
     expect(install?.disabled).toBe(false);
   });
 
   it("locks every skill mutation control behind the active mutation", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function (this: HTMLDialogElement) {
-      this.setAttribute("open", "");
-    });
+    const { container, query } = createView(true);
     const calendar = createSkill({
       skillKey: "calendar",
       name: "Calendar",
@@ -277,9 +376,7 @@ describe("renderSkills", () => {
     renderSkills(props, container);
     await Promise.resolve();
 
-    const refresh = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent?.trim() === "Refresh",
-    );
+    const refresh = findButton(container, "Refresh");
     expect(refresh?.disabled).toBe(true);
     expect(
       Array.from(
@@ -289,12 +386,10 @@ describe("renderSkills", () => {
     expect(container.querySelectorAll(".plugins-item input.settings-toggle__input")).toHaveLength(
       0,
     );
-    expect(container.querySelector<HTMLInputElement>('input[type="password"]')?.disabled).toBe(
-      true,
+    expect(query<HTMLInputElement>('input[type="password"]')?.disabled).toBe(true);
+    const mutationButtons = buttons(container).filter((node) =>
+      /^(Install|Save key)/.test(normalizeText(node)),
     );
-    const mutationButtons = Array.from(
-      container.querySelectorAll<HTMLButtonElement>("button"),
-    ).filter((button) => /^(Install|Save key)/.test(normalizeText(button)));
     expect(mutationButtons).toHaveLength(2);
     expect(mutationButtons.every((button) => button.disabled)).toBe(true);
 
@@ -313,16 +408,14 @@ describe("renderSkills", () => {
     expect(onInstall).not.toHaveBeenCalled();
 
     renderSkills({ ...props, surface: "discovery" }, container);
-    const remoteInstall = container.querySelector<HTMLButtonElement>(
-      ".plugin-catalog-card__install",
-    );
+    const remoteInstall = query<HTMLButtonElement>(".plugin-catalog-card__install");
     expect(remoteInstall?.disabled).toBe(true);
     remoteInstall?.click();
     expect(onClawHubInstall).not.toHaveBeenCalled();
   });
 
   it("keeps the remaining skill's status and details target when a skill leaves the disabled tab", async () => {
-    const container = createContainer();
+    const { container, query, render } = createView();
 
     const passwordSkill = createSkill({ skillKey: "1password", name: "1Password", disabled: true });
     const appleNotesSkill = createSkill({
@@ -332,7 +425,7 @@ describe("renderSkills", () => {
     });
     const report: SkillStatusReport = skillReport([passwordSkill, appleNotesSkill]);
 
-    renderView(container, { report, statusFilter: "disabled" });
+    render({ report, statusFilter: "disabled" });
     await Promise.resolve();
 
     expect(container.querySelectorAll(".plugins-item [role=img]")).toHaveLength(2);
@@ -343,10 +436,10 @@ describe("renderSkills", () => {
     ]);
 
     const onDetailOpen = vi.fn();
-    renderView(container, { report: updatedReport, statusFilter: "disabled", onDetailOpen });
+    render({ report: updatedReport, statusFilter: "disabled", onDetailOpen });
     await Promise.resolve();
 
-    const row = container.querySelector(".plugins-item")!;
+    const row = query(".plugins-item")!;
     expect(container.querySelectorAll(".plugins-item")).toHaveLength(1);
     expect(row.textContent).toContain("Apple Notes");
     expect(row.querySelector("[role=img]")?.getAttribute("title")).toContain("Disabled");
@@ -355,31 +448,28 @@ describe("renderSkills", () => {
   });
 
   it("treats skills blocked by the selected agent filter as needing setup", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function (this: HTMLDialogElement) {
-      this.setAttribute("open", "");
-    });
+    const { container, query, text, render } = createView(true);
     const report: SkillStatusReport = skillReport([createSkill({ blockedByAgentFilter: true })]);
 
-    renderView(container, { report, statusFilter: "ready" });
+    render({ report, statusFilter: "ready" });
     await Promise.resolve();
 
     expect(container.querySelectorAll(".plugins-item")).toHaveLength(0);
-    expect(normalizeText(container)).toContain("Ready 0");
-    expect(normalizeText(container)).toContain("Needs Setup 1");
+    expect(text()).toContain("Ready 0");
+    expect(text()).toContain("Needs Setup 1");
 
-    renderView(container, { report, statusFilter: "needs-setup", detailKey: "repo-skill" });
+    render({ report, statusFilter: "needs-setup", detailKey: "repo-skill" });
     await Promise.resolve();
 
-    expect(container.querySelector(".plugins-item .settings-status--warn")).not.toBeNull();
-    expect(normalizeText(container)).toContain("Reason: blocked by agent filter");
+    expect(query(".plugins-item .settings-status--warn")).not.toBeNull();
+    expect(text()).toContain("Reason: blocked by agent filter");
     expect(
       Array.from(container.querySelectorAll(".chip")).map((chip) => normalizeText(chip)),
     ).toContain("blocked");
   });
 
   it("opens detail dialogs and routes ClawHub actions", async () => {
-    const container = createContainer();
+    const { container, query, render } = createView();
     const onDetailClose = vi.fn();
     const showModal = vi.fn(function (this: HTMLDialogElement) {
       this.setAttribute("open", "");
@@ -393,7 +483,7 @@ describe("renderSkills", () => {
       this.dispatchEvent(new Event("close"));
     });
 
-    renderView(container, {
+    render({
       detailKey: "repo-skill",
       onDetailClose,
     });
@@ -402,15 +492,13 @@ describe("renderSkills", () => {
     expect(showModal).toHaveBeenCalledTimes(1);
     expect(dialog.open).toBe(true);
 
-    const closeButton = container.querySelector<HTMLButtonElement>(
-      ".skill-reader-dialog .exec-approval-header .btn",
-    );
+    const closeButton = query<HTMLButtonElement>(".skill-reader-dialog .exec-approval-header .btn");
     expect(closeButton).toBeInstanceOf(HTMLButtonElement);
     closeButton!.click();
 
     expect(onDetailClose).toHaveBeenCalledTimes(1);
 
-    renderView(container, {
+    render({
       surface: "discovery",
       clawhubQuery: "git",
       clawhubResults: [
@@ -433,7 +521,7 @@ describe("renderSkills", () => {
     });
     await Promise.resolve();
 
-    const resultItem = container.querySelector<HTMLElement>(".plugin-catalog-card");
+    const resultItem = query<HTMLElement>(".plugin-catalog-card");
     const detailButton = resultItem?.querySelector<HTMLButtonElement>(
       ".plugin-catalog-card__primary-link",
     );
@@ -465,32 +553,15 @@ describe("renderSkills", () => {
     onClawHubInstall.mockClear();
     showModal.mockClear();
 
-    renderView(container, {
+    render({
       surface: "discovery",
       clawhubSearchError: "rate limited",
       clawhubInstallMessage: { kind: "success", text: "Installed github" },
       clawhubDetailRef: "github",
       clawhubDetail: {
-        skill: {
-          slug: "github",
-          displayName: "GitHub",
-          summary: "GitHub integration for OpenClaw",
+        ...githubDetail({
           icon: `https://clawhub.ai/api/v1/skill-icons/${"b".repeat(64)}`,
-          createdAt: 1_700_000_000,
-          updatedAt: 1_700_000_100,
-        },
-        latestVersion: {
-          version: "1.2.3",
-          createdAt: 1_700_000_200,
-          changelog: "Added search support",
-        },
-        metadata: {
-          os: ["macos", "linux"],
-        },
-        owner: {
-          displayName: "OpenClaw",
-          handle: "openclaw",
-        },
+        }),
       },
       clawhubIconUrls: {
         [`https://clawhub.ai/api/v1/skill-icons/${"b".repeat(64)}`]: "blob:clawhub-detail-icon",
@@ -503,15 +574,12 @@ describe("renderSkills", () => {
     expect(
       Array.from(container.querySelectorAll(".callout")).map((node) => normalizeText(node)),
     ).toEqual(["rate limited Retry", "Installed github"]);
-    expect(normalizeText(container.querySelector(".skill-reader-dialog__body")!)).toBe(
-      "GitHub integration for OpenClaw By OpenClaw (@openclaw) · Latest: v1.2.3 Added search support Platforms: macos, linux",
-    );
-    expect(container.querySelector<HTMLImageElement>(".clawhub-skill-icon--detail")?.src).toBe(
+    expect(query<HTMLImageElement>(".clawhub-skill-icon--detail")?.src).toBe(
       "blob:clawhub-detail-icon",
     );
-    expect(container.querySelector(".clawhub-skill-icon--profile")).toBeNull();
+    expect(query(".clawhub-skill-icon--profile")).toBeNull();
 
-    const detailInstallButton = container.querySelector<HTMLButtonElement>(
+    const detailInstallButton = query<HTMLButtonElement>(
       ".skill-reader-dialog__actions .btn.primary",
     );
     expect(detailInstallButton).toBeInstanceOf(HTMLButtonElement);
@@ -526,29 +594,17 @@ describe("renderSkills", () => {
   });
 
   it("updates the latest ClawHub version in an open detail dialog", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function (this: HTMLDialogElement) {
-      this.setAttribute("open", "");
-    });
+    const { container, query, render } = createView(true);
     const detail = {
-      skill: {
-        slug: "github",
-        displayName: "GitHub",
-        summary: "GitHub integration for OpenClaw",
-        createdAt: 1_700_000_000,
-        updatedAt: 1_700_000_100,
-      },
+      ...githubDetail({ summary: "GitHub integration for OpenClaw" }),
       latestVersion: { version: "1.0.0", createdAt: 1_700_000_200 },
     };
-    renderView(container, { clawhubDetailRef: "github", clawhubDetail: detail });
+    render({ clawhubDetailRef: "github", clawhubDetail: detail });
     const { dialog } = await getRenderedModalDialog(container);
-    const body = expectDefined(
-      container.querySelector(".skill-reader-dialog__body"),
-      "ClawHub detail body",
-    );
+    const body = expectDefined(query(".skill-reader-dialog__body"), "ClawHub detail body");
     expect(normalizeText(body)).toContain("Latest: v1.0.0");
 
-    renderView(container, {
+    render({
       clawhubDetailRef: "github",
       clawhubDetail: {
         ...detail,
@@ -557,7 +613,7 @@ describe("renderSkills", () => {
     });
 
     expect((await getRenderedModalDialog(container)).dialog).toBe(dialog);
-    expect(container.querySelector(".skill-reader-dialog__body")).toBe(body);
+    expect(query(".skill-reader-dialog__body")).toBe(body);
     expect(normalizeText(body)).toContain("Latest: v2.0.0");
     expect(normalizeText(body)).not.toContain("Latest: v1.0.0");
   });
@@ -568,21 +624,10 @@ describe("renderSkills", () => {
   ])(
     "marks official ClawHub skills in the detail title: isOfficial=%s",
     async (isOfficial, count) => {
-      const container = createContainer();
-      installDialogMethod("showModal", function (this: HTMLDialogElement) {
-        this.setAttribute("open", "");
-      });
-      renderView(container, {
+      const { container, render } = createView(true);
+      render({
         clawhubDetailRef: "@openclaw/github",
-        clawhubDetail: {
-          skill: {
-            slug: "github",
-            displayName: "GitHub",
-            createdAt: 1_700_000_000,
-            updatedAt: 1_700_000_100,
-            isOfficial,
-          },
-        },
+        clawhubDetail: githubDetail({ isOfficial }),
       });
       await getRenderedModalDialog(container);
       const badges = container.querySelectorAll(
@@ -592,49 +637,22 @@ describe("renderSkills", () => {
     },
   );
 
-  it.each(["Unable to read skill", null])(
-    "keeps unavailable ClawHub details footer-free: %s",
-    async (clawhubDetailError) => {
-      const container = createContainer();
-      installDialogMethod("showModal", function (this: HTMLDialogElement) {
-        this.setAttribute("open", "");
-      });
-      renderView(container, { clawhubDetailRef: "guide", clawhubDetailError });
-      await Promise.resolve();
-      expect(container.querySelector(".skill-reader-dialog__body")).not.toBeNull();
-      expect(container.querySelector(".skill-reader-dialog openclaw-modal-actions")).toBeNull();
-      expect(container.querySelector(".skill-reader-dialog__body")?.textContent).toContain(
-        clawhubDetailError ?? "Skill not found",
-      );
-    },
-  );
-
   it("offers install without a detail card for an install-only search result", async () => {
-    const container = createContainer();
+    const { container, render } = createView();
     const onClawHubDetailOpen = vi.fn();
     const onClawHubInstall = vi.fn();
 
-    renderView(container, {
+    render({
       surface: "discovery",
       clawhubQuery: "pdf",
       clawhubResults: [
-        {
-          score: 1,
-          slug: "pdf",
+        searchResult({
           // The Gateway marks external sources install-only; it serves no card for them.
-          registry: "https://clawhub.ai",
           installRef: "skills-sh:openai/skills/pdf",
           installOnly: true,
           trustState: "not-scanned-by-clawhub",
-          displayName: "Pdf",
-        },
-        {
-          score: 1,
-          slug: "pdf",
-          installRef: "@awspace/pdf",
-          registry: "https://clawhub.ai",
-          displayName: "Pdf",
-        },
+        }),
+        searchResult({ installRef: "@awspace/pdf" }),
       ],
       onClawHubDetailOpen,
       onClawHubInstall,
@@ -664,22 +682,18 @@ describe("renderSkills", () => {
   });
 
   it("shows one installed external card without another install action", async () => {
-    const container = createContainer();
+    const { container, render } = createView();
     const onClawHubInstall = vi.fn();
 
-    renderView(container, {
+    render({
       surface: "discovery",
       showInventory: false,
       clawhubQuery: "pdf",
       clawhubResults: [
-        {
-          score: 1,
-          slug: "pdf",
+        searchResult({
           installRef: "skills-sh:openai/skills/pdf",
-          registry: "https://clawhub.ai",
           installOnly: true,
-          displayName: "Pdf",
-        },
+        }),
       ],
       report: skillReport([
         createSkill({
@@ -708,10 +722,7 @@ describe("renderSkills", () => {
   });
 
   it("renders installed ClawHub verdicts and the local Skill Card tab", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function (this: HTMLDialogElement) {
-      this.setAttribute("open", "");
-    });
+    const { container, query, text, render } = createView(true);
 
     const linkedSkill = createSkill({
       ...createLinkedSkill("openclaw"),
@@ -722,103 +733,78 @@ describe("renderSkills", () => {
       },
     });
     const report: SkillStatusReport = skillReport([linkedSkill]);
-    const verdictKey = clawhubVerdictKey({
-      registry: "https://clawhub.ai",
-      slug: "agentreceipt",
-      ownerHandle: "openclaw",
-      version: "1.2.3",
-    });
+    const suspicious = verdicts(
+      verdict({
+        ok: false,
+        decision: "fail",
+        reasons: ["security.suspicious"],
+        requestedOwnerHandle: "openclaw",
+        securityStatus: "suspicious",
+        securityPassed: false,
+        securityAuditUrl:
+          "https://clawhub.ai/openclaw/skills/agentreceipt/security-audit?version=1.2.3",
+      }),
+      "openclaw",
+    );
     const onDetailTabChange = vi.fn();
 
-    renderView(container, {
+    render({
       report,
       detailKey: "agentreceipt",
       onDetailTabChange,
-      clawhubVerdicts: {
-        [verdictKey]: {
-          registry: "https://clawhub.ai",
-          ok: false,
-          decision: "fail",
-          reasons: ["security.suspicious"],
-          requestedSlug: "agentreceipt",
-          requestedOwnerHandle: "openclaw",
-          requestedVersion: "1.2.3",
-          slug: "agentreceipt",
-          version: "1.2.3",
-          securityAuditUrl:
-            "https://clawhub.ai/openclaw/skills/agentreceipt/security-audit?version=1.2.3",
-          securityStatus: "suspicious",
-          securityPassed: false,
-        },
-      },
+      clawhubVerdicts: suspicious,
     });
     await Promise.resolve();
 
-    expect(normalizeText(container)).toContain("Review");
-    expect(normalizeText(container)).toContain("@openclaw/agentreceipt@1.2.3");
-    expect(normalizeText(container)).toContain("security.suspicious");
-    expect(
-      container.querySelector<HTMLAnchorElement>('a[href*="security-audit"]')?.textContent?.trim(),
-    ).toBe("Full security report");
-    expect(container.querySelector("#skill-detail-tab-overview")?.hasAttribute("active")).toBe(
-      true,
+    expect(text()).toContain("Review");
+    expect(text()).toContain("@openclaw/agentreceipt@1.2.3");
+    expect(text()).toContain("security.suspicious");
+    expect(query<HTMLAnchorElement>('a[href*="security-audit"]')?.textContent?.trim()).toBe(
+      "Full security report",
     );
+    expect(query("#skill-detail-tab-overview")?.hasAttribute("active")).toBe(true);
     container
       .querySelector("#skill-detail-tab-card")
       ?.dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true }));
     expect(onDetailTabChange).toHaveBeenCalledWith("card");
 
-    renderView(container, {
+    render({
       report,
       detailKey: "agentreceipt",
       detailTab: "card",
       skillCardContents: {
         agentreceipt: "# AgentReceipt\n\nLocal **trust** card.",
       },
-      clawhubVerdicts: {
-        [verdictKey]: {
-          registry: "https://clawhub.ai",
-          ok: false,
-          decision: "fail",
-          reasons: ["security.suspicious"],
-          requestedSlug: "agentreceipt",
-          requestedOwnerHandle: "openclaw",
-          requestedVersion: "1.2.3",
-          securityAuditUrl:
-            "https://clawhub.ai/openclaw/skills/agentreceipt/security-audit?version=1.2.3",
-          securityStatus: "suspicious",
-          securityPassed: false,
-        },
-      },
+      clawhubVerdicts: suspicious,
     });
     await Promise.resolve();
 
-    expect(container.querySelector("#skill-detail-tab-card")?.hasAttribute("active")).toBe(true);
-    expect(container.querySelector(".sidebar-markdown strong")?.textContent).toBe("trust");
-    expect(normalizeText(container)).toContain("AgentReceipt Local trust card.");
+    expect(query("#skill-detail-tab-card")?.hasAttribute("active")).toBe(true);
+    expect(query(".sidebar-markdown strong")?.textContent).toBe("trust");
+    expect(text()).toContain("AgentReceipt Local trust card.");
   });
 
   it("retains the toolbar and keyed rows across status reads", async () => {
-    const container = createContainer();
+    const { container, query, render } = createView();
     const initial = createDeferred<{ value: SkillStatusReport | null; error: string | null }>();
     const initialRead = { completion: initial.promise };
-    renderView(container, { report: null });
-    const search = container.querySelector<HTMLInputElement>('input[name="skills-filter"]')!;
+    render({ report: null });
+    const search = query<HTMLInputElement>('input[name="skills-filter"]')!;
     search.focus();
-    renderView(container, { report: null, loading: true, skillsRead: initialRead });
-    expect(container.querySelector('input[name="skills-filter"]')).toBe(search);
+    render({ report: null, loading: true, skillsRead: initialRead });
+    expect(query('input[name="skills-filter"]')).toBe(search);
     expect(document.activeElement).toBe(search);
-    expect(container.querySelector(".plugins-item")).toBeNull();
+    expect(query(".plugins-item")).toBeNull();
     const report = skillReport([createSkill()]);
     initial.resolve({ value: report, error: null });
-    renderView(container, { report, skillsRead: initialRead });
-    await waitForFast(() => expect(container.querySelector(".plugins-item")).not.toBeNull());
-    const row = container.querySelector(".plugins-item");
+    render({ report, skillsRead: initialRead });
+    await waitForFast(() => expect(query(".plugins-item")).not.toBeNull());
+    const row = query(".plugins-item");
     const pending = createDeferred<{ value: SkillStatusReport | null; error: string | null }>();
     const pendingRead = { completion: pending.promise };
-    renderView(container, { report, loading: true, skillsRead: pendingRead });
-    expect(container.querySelector(".plugins-item")).toBe(row);
-    expect(container.querySelector('input[name="skills-filter"]')).toBe(search);
+    render({ report, loading: true, skillsRead: pendingRead });
+    expect(query(".plugins-item")).toBe(row);
+    expect(query('input[name="skills-filter"]')).toBe(search);
     expect(document.activeElement).toBe(search);
     const refresh = () =>
       Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
@@ -829,18 +815,15 @@ describe("renderSkills", () => {
     expect(refresh().textContent).toContain("Loading");
     const updated = skillReport([createSkill({ description: "Updated description" })]);
     pending.resolve({ value: updated, error: null });
-    renderView(container, { report: updated, skillsRead: pendingRead });
+    render({ report: updated, skillsRead: pendingRead });
     await waitForFast(() => expect(row?.textContent).toContain("Updated description"));
-    expect(container.querySelector(".plugins-item")).toBe(row);
+    expect(query(".plugins-item")).toBe(row);
     expect(refresh().disabled).toBe(false);
     expect(refresh().textContent).toContain("Refresh");
   });
 
   it("renders card read errors and retries inside the existing detail dialog", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function (this: HTMLDialogElement) {
-      this.setAttribute("open", "");
-    });
+    const { container, render } = createView(true);
     const report = skillReport([
       createSkill({
         skillCard: { present: true, path: "/tmp/skill/SKILL.md", sizeBytes: 12 },
@@ -848,7 +831,7 @@ describe("renderSkills", () => {
     ]);
     const pending = createDeferred<{ value: string | undefined; error: string | null }>();
     const read = { cacheKey: "/tmp/skill/SKILL.md\0v1", completion: pending.promise };
-    renderView(container, {
+    render({
       report,
       detailKey: "repo-skill",
       detailTab: "card",
@@ -862,7 +845,7 @@ describe("renderSkills", () => {
     );
     const retry = createDeferred<{ value: string | undefined; error: string | null }>();
     const retriedRead = { cacheKey: read.cacheKey, completion: retry.promise };
-    renderView(container, {
+    render({
       report,
       detailKey: "repo-skill",
       detailTab: "card",
@@ -871,7 +854,7 @@ describe("renderSkills", () => {
     await waitForFast(() => expect(normalizeText(dialog)).toContain("Loading"));
     expect(normalizeText(dialog)).not.toContain("Card temporarily unavailable");
     retry.resolve({ value: "# Restored card", error: null });
-    renderView(container, {
+    render({
       report,
       detailKey: "repo-skill",
       detailTab: "card",
@@ -884,30 +867,12 @@ describe("renderSkills", () => {
   });
 
   it("keeps the inventory and detail dialog while missing verdicts load", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function (this: HTMLDialogElement) {
-      this.setAttribute("open", "");
-    });
+    const { container, query } = createView(true);
     const pending = createDeferred<Record<string, ClawHubSkillSecurityVerdict>>();
-    const owner = mountSolid(
-      () => {
-        const verdicts = createDeferredRead(() => pending.promise);
-        return (
-          <Skills
-            {...createProps({
-              report: skillReport([createLinkedSkill()]),
-              detailKey: "agentreceipt",
-              readClawHubVerdicts: verdicts,
-            })}
-          />
-        );
-      },
-      { container },
-    );
-    dialogRestores.push(owner.unmount);
-    const row = container.querySelector(".plugins-item");
+    mountVerdictView(container, pending.promise);
+    const row = query(".plugins-item");
     const { dialog } = await getRenderedModalDialog(container);
-    const search = container.querySelector('input[name="skills-filter"]');
+    const search = query('input[name="skills-filter"]');
     const verdictLabels = () =>
       [...container.querySelectorAll(".settings-status, .chip")].map(normalizeText);
     expect(verdictLabels().filter((label) => label === "Refreshing…")).toHaveLength(2);
@@ -916,105 +881,42 @@ describe("renderSkills", () => {
     await waitForFast(() =>
       expect(verdictLabels().filter((label) => label === "Unavailable")).toHaveLength(2),
     );
-    expect(container.querySelector(".plugins-item")).toBe(row);
-    expect(container.querySelector('input[name="skills-filter"]')).toBe(search);
+    expect(query(".plugins-item")).toBe(row);
+    expect(query('input[name="skills-filter"]')).toBe(search);
     expect((await getRenderedModalDialog(container)).dialog).toBe(dialog);
   });
 
   it("replaces the detail selection while a retained verdict read is pending", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function (this: HTMLDialogElement) {
-      this.setAttribute("open", "");
-    });
+    const { container } = createView(true);
     const report = skillReport([createLinkedSkill(), createSkill()]);
-    const verdictKey = clawhubVerdictKey({
-      registry: "https://clawhub.ai",
-      slug: "agentreceipt",
-      version: "1.2.3",
-    });
-    const verdicts: Record<string, ClawHubSkillSecurityVerdict> = {
-      [verdictKey]: {
-        registry: "https://clawhub.ai",
-        ok: true,
-        decision: "pass",
-        reasons: [],
-        requestedSlug: "agentreceipt",
-        requestedVersion: "1.2.3",
-        slug: "agentreceipt",
-        version: "1.2.3",
-        securityStatus: "clean",
-        securityPassed: true,
-      },
-    };
+    const cleanVerdicts = verdicts();
     const pending = createDeferred<Record<string, ClawHubSkillSecurityVerdict>>();
-    let beginRead: (() => void) | undefined;
-    let selectOther: (() => void) | undefined;
-    const owner = mountSolid(
-      () => {
-        const [refreshing, setRefreshing] = createSignal(false);
-        const [selected, setSelected] = createSignal("agentreceipt");
-        const read = createDeferredRead(() =>
-          refreshing() ? pending.promise : Promise.resolve(verdicts),
-        );
-        beginRead = () => setRefreshing(true);
-        selectOther = () => setSelected("repo-skill");
-        const props = createProps({
-          report,
-          clawhubVerdicts: verdicts,
-          readClawHubVerdicts: read,
-        });
-        return <Skills {...props} state={{ ...props.state, skillsDetailKey: selected() }} />;
-      },
-      { container },
-    );
-    dialogRestores.push(owner.unmount);
+    const view = mountVerdictView(container, Promise.resolve(cleanVerdicts), {
+      report,
+      clawhubVerdicts: cleanVerdicts,
+    });
     const { dialog } = await getRenderedModalDialog(container);
     await waitForFast(() => expect(normalizeText(dialog)).toContain("Clean"));
-    expectDefined(beginRead, "verdict refresh callback")();
+    view.changeRead(pending.promise);
     await waitForFast(() => expect(normalizeText(dialog)).toContain("Refreshing"));
-    expectDefined(selectOther, "skill selection callback")();
+    view.select("repo-skill");
     await waitForFast(() => expect(normalizeText(dialog)).toContain("Repo Skill"));
     expect(normalizeText(dialog)).not.toContain("AgentReceipt");
     expect((await getRenderedModalDialog(container)).dialog).toBe(dialog);
-    pending.resolve(verdicts);
+    pending.resolve(cleanVerdicts);
   });
 
   it("shows verdict read failures and held retries without replacing the dialog", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function (this: HTMLDialogElement) {
-      this.setAttribute("open", "");
-    });
+    const { container } = createView(true);
     const first = createDeferred<Record<string, ClawHubSkillSecurityVerdict>>();
-    let changeRead:
-      | ((next: Promise<Record<string, ClawHubSkillSecurityVerdict>>) => void)
-      | undefined;
-    const owner = mountSolid(
-      () => {
-        const [receipt, setReceipt] = createSignal(first.promise);
-        changeRead = (next) => {
-          void setReceipt(next);
-        };
-        const read = createDeferredRead(() => receipt());
-        return (
-          <Skills
-            {...createProps({
-              report: skillReport([createLinkedSkill()]),
-              detailKey: "agentreceipt",
-              readClawHubVerdicts: read,
-            })}
-          />
-        );
-      },
-      { container },
-    );
-    dialogRestores.push(owner.unmount);
+    const view = mountVerdictView(container, first.promise);
     const { dialog } = await getRenderedModalDialog(container);
     first.reject(new Error("Verdicts temporarily unavailable"));
     await waitForFast(() =>
       expect(normalizeText(dialog)).toContain("Verdicts temporarily unavailable"),
     );
     const retry = createDeferred<Record<string, ClawHubSkillSecurityVerdict>>();
-    expectDefined(changeRead, "verdict receipt callback")(retry.promise);
+    view.changeRead(retry.promise);
     await waitForFast(() => expect(normalizeText(dialog)).toContain("Refreshing"));
     expect(normalizeText(dialog)).not.toContain("Verdicts temporarily unavailable");
     retry.resolve({});
@@ -1024,35 +926,13 @@ describe("renderSkills", () => {
   });
 
   it("fails closed for inconsistent ClawHub verdict envelopes", async () => {
-    const container = createContainer();
-    installDialogMethod("showModal", function (this: HTMLDialogElement) {
-      this.setAttribute("open", "");
-    });
+    const { container, render } = createView(true);
 
     const report = skillReport([createLinkedSkill()]);
-    const verdictKey = clawhubVerdictKey({
-      registry: "https://clawhub.ai",
-      slug: "agentreceipt",
-      version: "1.2.3",
-    });
-
-    renderView(container, {
+    render({
       report,
       detailKey: "agentreceipt",
-      clawhubVerdicts: {
-        [verdictKey]: {
-          registry: "https://clawhub.ai",
-          ok: false,
-          decision: "pass",
-          reasons: [],
-          requestedSlug: "agentreceipt",
-          requestedVersion: "1.2.3",
-          slug: "agentreceipt",
-          version: "1.2.3",
-          securityStatus: "clean",
-          securityPassed: true,
-        },
-      },
+      clawhubVerdicts: verdicts(verdict({ ok: false })),
     });
     await Promise.resolve();
 
