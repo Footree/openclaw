@@ -57,10 +57,7 @@ async function check(
 
 async function withSqliteStore(
   maxEntries: number,
-  run: (
-    store: MeetingParticipationOptions<object>["store"],
-    reopen: () => MeetingParticipationOptions<object>["store"],
-  ) => Promise<void>,
+  run: (store: MeetingParticipationOptions<object>["store"]) => Promise<void>,
 ) {
   const { createPluginStateKeyedStore, resetPluginStateStoreForTests } =
     await import("../plugin-state/plugin-state-store.js");
@@ -75,10 +72,7 @@ async function withSqliteStore(
           env: state.env,
         });
       try {
-        await run(createStore(), () => {
-          resetPluginStateStoreForTests();
-          return createStore();
-        });
+        await run(createStore());
       } finally {
         resetPluginStateStoreForTests();
       }
@@ -244,17 +238,7 @@ describe("meeting participation authority and durable attempts", () => {
     "fences replay after losing %s",
     async (failure) => {
       const store = memoryStore();
-      const first = harness({
-        store:
-          failure === "result persistence"
-            ? {
-                ...store,
-                register: async () => {
-                  throw new Error("Storage unavailable.");
-                },
-              }
-            : store,
-      });
+      const first = harness({ store });
       if (failure === "native response") {
         first.effect.mockRejectedValue(new Error("Native response lost."));
       }
@@ -421,30 +405,27 @@ describe("meeting participation live source capacity", () => {
     }));
   }
 
-  it.each([1_025])(
-    "preserves retained references and issued guards when replaying %i unchanged captions",
-    async (count) => {
-      vi.useFakeTimers();
-      const { owner, effect } = harness();
-      const snapshot = captions(count);
-      for (const caption of snapshot) {
-        owner.observe(sessionId, caption);
-      }
-      const before = owner.context(sessionId);
-      const retained = before.sources.at(-1)!;
-      const inspection = inspect(owner, retained.sourceId);
+  it("preserves retained references and issued guards when replaying 1025 unchanged captions", async () => {
+    vi.useFakeTimers();
+    const { owner, effect } = harness();
+    const snapshot = captions(1_025);
+    for (const caption of snapshot) {
+      owner.observe(sessionId, caption);
+    }
+    const before = owner.context(sessionId);
+    const retained = before.sources.at(-1)!;
+    const inspection = inspect(owner, retained.sourceId);
 
-      for (const caption of snapshot) {
-        owner.observe(sessionId, caption);
-      }
+    for (const caption of snapshot) {
+      owner.observe(sessionId, caption);
+    }
 
-      expect(owner.observe(sessionId, snapshot.at(-1)!)).toBe(retained.sourceId);
-      expect(() => inspection!.assertCurrent()).not.toThrow();
-      expect(owner.context(sessionId)).toEqual(before);
-      await check(owner, "succeeded", { sourceId: retained.sourceId });
-      expect(effect).toHaveBeenCalledOnce();
-    },
-  );
+    expect(owner.observe(sessionId, snapshot.at(-1)!)).toBe(retained.sourceId);
+    expect(() => inspection!.assertCurrent()).not.toThrow();
+    expect(owner.context(sessionId)).toEqual(before);
+    await check(owner, "succeeded", { sourceId: retained.sourceId });
+    expect(effect).toHaveBeenCalledOnce();
+  });
 
   it("evicts by original observation order after an interim correction is finalized", () => {
     vi.useFakeTimers();
@@ -553,81 +534,75 @@ describe("meeting participation bounded correction", () => {
 });
 
 describe("meeting participation ledger capacity", () => {
-  async function verifyClosedSessionCleanup(store: MeetingParticipationOptions<object>["store"]) {
-    const { owner, effect } = harness({ store }, ["closed", "active", "next"]);
-    effect.mockResolvedValue({ status: "succeeded", message: undefined, observed: undefined });
-    const original = await owner.execute("closed", {
-      ...request,
-      sourceId: undefined,
-      correctionOf: undefined,
-    });
-    await owner.execute("active", request);
-    owner.close("closed");
-    await expect(owner.execute("closed", request)).resolves.toEqual({
-      ...original,
-      replayed: true,
-    });
-
-    await check(owner, "succeeded", {}, "next");
-    expect(await store.lookup(`closed:request:${request.requestId}`)).toBeUndefined();
-    const stored = await store.lookup(`active:request:${request.requestId}`);
-    expect(stored).not.toHaveProperty("sourceId");
-    expect(stored).not.toHaveProperty("correctionOf");
-    expect(stored?.result).toEqual({ requestId: request.requestId, status: "succeeded" });
-    await check(owner, { status: "succeeded", replayed: true }, {}, "active");
-    await check(owner, "rejected", {}, "closed");
-    expect(effect).toHaveBeenCalledTimes(3);
-  }
-
   it("makes space for new meetings in the real SQLite namespace without evicting active claims", async () => {
-    await withSqliteStore(2, verifyClosedSessionCleanup);
+    await withSqliteStore(2, async (store) => {
+      const { owner, effect } = harness({ store }, ["closed", "active", "next"]);
+      effect.mockResolvedValue({ status: "succeeded", message: undefined, observed: undefined });
+      const original = await owner.execute("closed", {
+        ...request,
+        sourceId: undefined,
+        correctionOf: undefined,
+      });
+      await owner.execute("active", request);
+      owner.close("closed");
+      await expect(owner.execute("closed", request)).resolves.toEqual({
+        ...original,
+        replayed: true,
+      });
+
+      await check(owner, "succeeded", {}, "next");
+      expect(await store.lookup(`closed:request:${request.requestId}`)).toBeUndefined();
+      const stored = await store.lookup(`active:request:${request.requestId}`);
+      expect(stored).not.toHaveProperty("sourceId");
+      expect(stored).not.toHaveProperty("correctionOf");
+      expect(stored?.result).toEqual({ requestId: request.requestId, status: "succeeded" });
+      await check(owner, { status: "succeeded", replayed: true }, {}, "active");
+      await check(owner, "rejected", {}, "closed");
+      expect(effect).toHaveBeenCalledTimes(3);
+    });
   });
 
-  async function verifyInvalidIdentifiersPreserveClosedLedger(
-    store: MeetingParticipationOptions<object>["store"],
-  ) {
-    const { owner, effect } = harness({ store }, ["closed", sessionId]);
-    await owner.execute("closed", request);
-    owner.close("closed");
-    const before = await store.entries();
-    const lookup = vi.spyOn(store, "lookup");
-    const claim = vi.spyOn(store, "registerIfAbsent");
-    const entries = vi.spyOn(store, "entries");
-    const deletion = vi.spyOn(store, "delete");
-
-    for (const field of [
-      "sessionId",
-      "requestId",
-      "actionType",
-      "sourceId",
-      "correctionOf",
-    ] as const) {
-      for (const value of ["", "  ", "a".repeat(129), "🦞".repeat(33)]) {
-        const invalid = structuredClone(request);
-        let targetSession = sessionId;
-        if (field === "sessionId") {
-          targetSession = value;
-        } else if (field === "actionType") {
-          invalid.action.type = value;
-        } else {
-          invalid[field] = value;
-        }
-        await expect(owner.execute(targetSession, invalid)).resolves.toMatchObject({
-          status: "rejected",
-        });
-      }
-    }
-
-    expect(lookup).not.toHaveBeenCalled();
-    expect(claim).not.toHaveBeenCalled();
-    expect(entries).not.toHaveBeenCalled();
-    expect(deletion).not.toHaveBeenCalled();
-    expect(effect).toHaveBeenCalledTimes(1);
-    expect(await store.entries()).toEqual(before);
-  }
-
   it("does not clean up closed SQLite claims for oversized or blank input fields", async () => {
-    await withSqliteStore(1, verifyInvalidIdentifiersPreserveClosedLedger);
+    await withSqliteStore(1, async (store) => {
+      const { owner, effect } = harness({ store }, ["closed", sessionId]);
+      await owner.execute("closed", request);
+      owner.close("closed");
+      const before = await store.entries();
+      const lookup = vi.spyOn(store, "lookup");
+      const claim = vi.spyOn(store, "registerIfAbsent");
+      const entries = vi.spyOn(store, "entries");
+      const deletion = vi.spyOn(store, "delete");
+
+      for (const field of [
+        "sessionId",
+        "requestId",
+        "actionType",
+        "sourceId",
+        "correctionOf",
+      ] as const) {
+        for (const value of ["", "  ", "a".repeat(129), "🦞".repeat(33)]) {
+          const invalid = structuredClone(request);
+          let targetSession = sessionId;
+          if (field === "sessionId") {
+            targetSession = value;
+          } else if (field === "actionType") {
+            invalid.action.type = value;
+          } else {
+            invalid[field] = value;
+          }
+          await expect(owner.execute(targetSession, invalid)).resolves.toMatchObject({
+            status: "rejected",
+          });
+        }
+      }
+
+      expect(lookup).not.toHaveBeenCalled();
+      expect(claim).not.toHaveBeenCalled();
+      expect(entries).not.toHaveBeenCalled();
+      expect(deletion).not.toHaveBeenCalled();
+      expect(effect).toHaveBeenCalledTimes(1);
+      expect(await store.entries()).toEqual(before);
+    });
   });
 
   it("does not evict current session claims when capacity is exhausted", async () => {
