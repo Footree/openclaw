@@ -11,6 +11,7 @@ import {
   areUiSessionKeysEquivalent,
   normalizeDefaultMainSessionAliasForUi,
 } from "../../lib/sessions/session-key.ts";
+import { persistedSteerTargetRunId } from "./stream-causal-boundary.ts";
 
 type LiveTerminalIdentity = {
   runId: string;
@@ -49,7 +50,10 @@ type PendingAuthoritativeTerminal = {
   sessionKey: string;
 };
 
-/** A saved row owns the run's final reply only when it carries non-commentary text. */
+/**
+ * A saved row owns the run's final reply when it carries non-commentary text or
+ * displayable media; tool-call continuations never own it (#149153).
+ */
 function ownsFinalReply(message: unknown): boolean {
   if (readAssistantStreamSegmentIdentity(message) !== undefined) {
     return false;
@@ -65,7 +69,25 @@ function ownsFinalReply(message: unknown): boolean {
   if (Array.isArray(content) && content.some((block) => isContractToolCallBlock(block))) {
     return false;
   }
-  return Boolean(extractText(message)?.trim());
+  if (extractText(message)?.trim()) {
+    return true;
+  }
+  // A pure-media final (an image answer) owns the run's terminal through its
+  // displayable non-text blocks: a text-only check would leave it unarmed and
+  // rendering beside its persisted row twice (#149153).
+  return Array.isArray(content) && content.some((block) => isDisplayableMediaBlock(block));
+}
+
+function isDisplayableMediaBlock(block: unknown): boolean {
+  const record = asNullableRecord(block);
+  if (record?.type !== "image") {
+    return false;
+  }
+  // Persisted media carries an artifact id; inline projections carry a source.
+  return (
+    (typeof record.artifactId === "string" && record.artifactId.trim().length > 0) ||
+    asNullableRecord(record.source) !== null
+  );
 }
 
 /**
@@ -370,6 +392,44 @@ export function authoritativeHistoryAppliedForRun(
   // Session-scoped: a host that switched sessions must not lend another
   // session's applied flag to a replaying final with a colliding run id (#149153).
   return areUiSessionKeysEquivalent(terminal.sessionKey, sessionKey);
+}
+
+/**
+ * A steered run can persist pre-steer text while it still reads active; the
+ * history reload that carries that row applies it, but a steer row after it
+ * fences the terminal: the run's next chat.final is the post-steer answer, not
+ * a replay, so the gateway must not discard it (#149153).
+ */
+export function authoritativeTerminalFencedBySteer(options: {
+  host: object;
+  messages: readonly unknown[];
+  runId: string;
+  sessionKey: string;
+}): boolean {
+  const terminal = authoritativeTerminals
+    .get(options.host)
+    ?.get(terminalRecordKey(options.sessionKey, options.runId));
+  if (!terminal) {
+    return false;
+  }
+  let terminalIndex = -1;
+  let steerIndex = -1;
+  for (let index = 0; index < options.messages.length; index += 1) {
+    const message = options.messages[index];
+    const identity = readSessionMessageIdentity(message);
+    if (
+      identity?.role === "assistant" &&
+      !identity.isImported &&
+      identity.id === terminal.messageId
+    ) {
+      terminalIndex = index;
+    } else if (identity?.role === "user" && persistedSteerTargetRunId(message) === options.runId) {
+      steerIndex = index;
+    }
+  }
+  // A steer with no terminal row in view still fences: every projection places
+  // the applied pre-steer row before the steer that caused its reload (#149153).
+  return steerIndex >= 0 && steerIndex > terminalIndex;
 }
 
 export function normalizeFinalAssistantMessage(message: unknown): Record<string, unknown> | null {

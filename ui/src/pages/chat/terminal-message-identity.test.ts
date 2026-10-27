@@ -5,6 +5,7 @@ import {
   armPendingAuthoritativeTerminalForHistory,
   authoritativeAppliedRunIdsForSession,
   authoritativeHistoryAppliedForRun,
+  authoritativeTerminalFencedBySteer,
   reconcileAuthoritativeTerminalHistory,
   rememberAuthoritativeTerminal,
   rememberLiveTerminalRun,
@@ -19,99 +20,6 @@ function persistedFinal() {
 }
 
 describe("deferred authoritative terminals", () => {
-  it("retires the live copy once the run clears after an active-run persist", () => {
-    const host = {};
-    const liveTerminal = rememberLiveTerminalRun(
-      { role: "assistant", content: [{ type: "text", text: "Final answer" }] },
-      "run-1",
-    );
-
-    // The persisted final lands while the run still reads active: without a
-    // deferred record the live copy has no dedup owner yet (#149153).
-    rememberAuthoritativeTerminal({
-      event: { key: "main", runId: "run-1", hasActiveRun: true },
-      host,
-      matchesChat: true,
-      payload: { message: persistedFinal(), messageId: "final-message" },
-      runIdBeforeApply: "run-1",
-    });
-    expect(
-      reconcileAuthoritativeTerminalHistory({
-        host,
-        previousMessages: [liveTerminal],
-        sessionKey: "main",
-        visibleMessages: [persistedFinal()],
-      }),
-    ).toEqual([liveTerminal]);
-
-    // The history reload that carries the persisted terminal arms the deferred
-    // record, so that same reconcile retires the live copy instead of stacking
-    // two renders — this is the path chat.final already reaches.
-    armPendingAuthoritativeTerminalForHistory({
-      host,
-      sessionKey: "main",
-      visibleMessages: [persistedFinal()],
-    });
-    expect(
-      reconcileAuthoritativeTerminalHistory({
-        host,
-        previousMessages: [liveTerminal],
-        sessionKey: "main",
-        visibleMessages: [persistedFinal()],
-      }),
-    ).toEqual([]);
-  });
-
-  it("keeps the deferred terminal pending until its own history arrives", () => {
-    const host = {};
-    const liveTerminal = rememberLiveTerminalRun(
-      { role: "assistant", content: [{ type: "text", text: "Final answer" }] },
-      "run-1",
-    );
-    rememberAuthoritativeTerminal({
-      event: { key: "main", runId: "run-1", hasActiveRun: true },
-      host,
-      matchesChat: true,
-      payload: { message: persistedFinal(), messageId: "final-message" },
-      runIdBeforeApply: "run-1",
-    });
-
-    armPendingAuthoritativeTerminalForHistory({
-      host,
-      sessionKey: "main",
-      visibleMessages: [
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "Other reply" }],
-          __openclaw: { id: "other-message" },
-        },
-      ],
-    });
-    expect(
-      reconcileAuthoritativeTerminalHistory({
-        host,
-        previousMessages: [liveTerminal],
-        sessionKey: "main",
-        visibleMessages: [persistedFinal()],
-      }),
-    ).toEqual([liveTerminal]);
-
-    // The owning terminal's own history still retires it.
-    armPendingAuthoritativeTerminalForHistory({
-      host,
-      sessionKey: "main",
-      visibleMessages: [persistedFinal()],
-    });
-    expect(
-      reconcileAuthoritativeTerminalHistory({
-        host,
-        previousMessages: [liveTerminal],
-        sessionKey: "main",
-        visibleMessages: [persistedFinal()],
-      }),
-    ).toEqual([]);
-  });
-
   it("ignores a commentary row while an active run persists", () => {
     const host = {};
     const liveTerminal = rememberLiveTerminalRun(
@@ -172,6 +80,58 @@ describe("deferred authoritative terminals", () => {
     ).toEqual([liveTerminal]);
   });
 
+  it("keeps the deferred terminal pending until its own history arrives", () => {
+    const host = {};
+    const liveTerminal = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "text", text: "Final answer" }] },
+      "run-1",
+    );
+    rememberAuthoritativeTerminal({
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      host,
+      matchesChat: true,
+      payload: { message: persistedFinal(), messageId: "final-message" },
+      runIdBeforeApply: "run-1",
+    });
+
+    // An unrelated history page must not promote the pending record: only the
+    // page that actually carries the terminal owns its retirement (#149153).
+    armPendingAuthoritativeTerminalForHistory({
+      host,
+      sessionKey: "main",
+      visibleMessages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Other reply" }],
+          __openclaw: { id: "other-message" },
+        },
+      ],
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [liveTerminal],
+        sessionKey: "main",
+        visibleMessages: [persistedFinal()],
+      }),
+    ).toEqual([liveTerminal]);
+
+    // The owning terminal's own history still retires it.
+    armPendingAuthoritativeTerminalForHistory({
+      host,
+      sessionKey: "main",
+      visibleMessages: [persistedFinal()],
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [liveTerminal],
+        sessionKey: "main",
+        visibleMessages: [persistedFinal()],
+      }),
+    ).toEqual([]);
+  });
+
   it("retires each run's live copy when two active runs persist in sequence", () => {
     const host = {};
     const firstLive = rememberLiveTerminalRun(
@@ -200,6 +160,7 @@ describe("deferred authoritative terminals", () => {
     persist("run-1", "first-message", "First answer");
     persist("run-2", "second-message", "Second answer");
 
+    // The first page promotes run-1 only; run-2's pending must survive it.
     const first = {
       role: "assistant",
       content: [{ type: "text", text: "First answer" }],
@@ -219,7 +180,7 @@ describe("deferred authoritative terminals", () => {
       }),
     ).toEqual([secondLive]);
 
-    // The second run's pending survived the first promotion.
+    // The second page then retires the surviving run.
     const second = {
       role: "assistant",
       content: [{ type: "text", text: "Second answer" }],
@@ -236,63 +197,6 @@ describe("deferred authoritative terminals", () => {
         previousMessages: [secondLive],
         sessionKey: "main",
         visibleMessages: [second],
-      }),
-    ).toEqual([]);
-  });
-
-  it("retires both runs when one history page carries both finals", () => {
-    const host = {};
-    const firstLive = rememberLiveTerminalRun(
-      { role: "assistant", content: [{ type: "text", text: "First answer" }] },
-      "run-1",
-    );
-    const secondLive = rememberLiveTerminalRun(
-      { role: "assistant", content: [{ type: "text", text: "Second answer" }] },
-      "run-2",
-    );
-    const persist = (runId: string, messageId: string, text: string) =>
-      rememberAuthoritativeTerminal({
-        event: { key: "main", runId, hasActiveRun: true },
-        host,
-        matchesChat: true,
-        payload: {
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text }],
-            __openclaw: { id: messageId },
-          },
-          messageId,
-        },
-        runIdBeforeApply: runId,
-      });
-    persist("run-1", "first-message", "First answer");
-    persist("run-2", "second-message", "Second answer");
-
-    // One history page carrying both finals must retire both live copies:
-    // a single armed slot would let the second displace the first (#149153).
-    const page = [
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "First answer" }],
-        __openclaw: { id: "first-message" },
-      },
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Second answer" }],
-        __openclaw: { id: "second-message" },
-      },
-    ];
-    armPendingAuthoritativeTerminalForHistory({
-      host,
-      sessionKey: "main",
-      visibleMessages: page,
-    });
-    expect(
-      reconcileAuthoritativeTerminalHistory({
-        host,
-        previousMessages: [firstLive, secondLive],
-        sessionKey: "main",
-        visibleMessages: page,
       }),
     ).toEqual([]);
   });
@@ -709,5 +613,140 @@ describe("unkeyed stream projections", () => {
         visibleMessages: [persistedFinal()],
       }),
     ).toEqual([otherRunProjection]);
+  });
+});
+
+describe("terminal ownership", () => {
+  it("arms a pure-media final that carries no text", () => {
+    const host = {};
+    const liveTerminal = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "image", artifactId: "art-1" }] },
+      "run-1",
+    );
+    // An image-only answer owns the run's terminal: a blank-text check would
+    // leave it unarmed and the media would render twice (#149153).
+    const imageFinal = {
+      role: "assistant",
+      content: [{ type: "image", artifactId: "art-1" }],
+      __openclaw: { id: "image-final" },
+    };
+    rememberAuthoritativeTerminal({
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      host,
+      matchesChat: true,
+      payload: { message: imageFinal, messageId: "image-final" },
+      runIdBeforeApply: "run-1",
+    });
+    armPendingAuthoritativeTerminalForHistory({
+      host,
+      sessionKey: "main",
+      visibleMessages: [imageFinal],
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [liveTerminal],
+        sessionKey: "main",
+        visibleMessages: [imageFinal],
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("steer fencing", () => {
+  const finalRow = {
+    role: "assistant",
+    content: [{ type: "text", text: "Before steer." }],
+    __openclaw: { id: "pre-steer-message" },
+  };
+  const steerRow = {
+    role: "user",
+    content: [{ type: "text", text: "Steer" }],
+    __openclaw: { id: "steer-1", steerTargetRunId: "run-1" },
+  };
+  const armApplied = (host: object) => {
+    rememberAuthoritativeTerminal({
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      host,
+      matchesChat: true,
+      payload: { message: finalRow, messageId: "pre-steer-message" },
+      runIdBeforeApply: "run-1",
+    });
+    armPendingAuthoritativeTerminalForHistory({
+      host,
+      sessionKey: "main",
+      visibleMessages: [finalRow],
+    });
+    reconcileAuthoritativeTerminalHistory({
+      host,
+      previousMessages: [],
+      sessionKey: "main",
+      visibleMessages: [finalRow],
+    });
+  };
+
+  it("fences the applied terminal when a steer row follows it", () => {
+    const host = {};
+    armApplied(host);
+    expect(
+      authoritativeTerminalFencedBySteer({
+        host,
+        messages: [finalRow, steerRow],
+        runId: "run-1",
+        sessionKey: "main",
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the terminal when its row follows the steer", () => {
+    const host = {};
+    armApplied(host);
+    expect(
+      authoritativeTerminalFencedBySteer({
+        host,
+        messages: [steerRow, finalRow],
+        runId: "run-1",
+        sessionKey: "main",
+      }),
+    ).toBe(false);
+  });
+
+  it("leaves a run without a steer unfenced", () => {
+    const host = {};
+    armApplied(host);
+    expect(
+      authoritativeTerminalFencedBySteer({
+        host,
+        messages: [finalRow],
+        runId: "run-1",
+        sessionKey: "main",
+      }),
+    ).toBe(false);
+  });
+
+  it("still fences when the applied row is out of view", () => {
+    const host = {};
+    armApplied(host);
+    expect(
+      authoritativeTerminalFencedBySteer({
+        host,
+        messages: [steerRow],
+        runId: "run-1",
+        sessionKey: "main",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not fence another run without a terminal record", () => {
+    const host = {};
+    armApplied(host);
+    expect(
+      authoritativeTerminalFencedBySteer({
+        host,
+        messages: [finalRow, steerRow],
+        runId: "run-2",
+        sessionKey: "main",
+      }),
+    ).toBe(false);
   });
 });

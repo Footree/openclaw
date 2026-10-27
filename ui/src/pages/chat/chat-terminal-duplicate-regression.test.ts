@@ -258,4 +258,97 @@ describe("#149153 live-copy retirement across history reloads", () => {
     expect(authoritativeHistoryAppliedForRun(state, "run-1", "main")).toBe(true);
     expect(authoritativeHistoryAppliedForRun(state, "run-2", "main")).toBe(true);
   });
+
+  it("keeps the post-steer final when the pre-steer row already applied (#149153 P1)", async () => {
+    const user = userText("Ask", { id: "user-1", seq: 1 });
+    const preSteer = replyText("Before steer.", {
+      id: "pre-steer-message",
+      seq: 2,
+      runId: "run-1",
+    });
+    const steerRow = userText("Steer", { id: "steer-1", seq: 3, steerTargetRunId: "run-1" });
+    const savedFinal = replyText("After steer answer", {
+      id: "post-steer-message",
+      seq: 4,
+      runId: "run-1",
+    });
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ messages: [user, preSteer, steerRow], sessionId: "session-1" })
+      .mockResolvedValue({
+        messages: [user, preSteer, steerRow, savedFinal],
+        sessionId: "session-1",
+      });
+    const state = createHistoryState(request, {
+      chatRunId: "run-1",
+      currentSessionId: "session-1",
+    });
+
+    receive(state, "delta", { message: replyText("Before steer."), replace: true });
+
+    // The pre-steer partial persists while the run still reads active.
+    rememberAuthoritativeTerminal({
+      host: state,
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      payload: { message: preSteer, messageId: "pre-steer-message" },
+      matchesChat: true,
+      runIdBeforeApply: "run-1",
+    });
+
+    // The steer triggers the history reload that applies the pre-steer row.
+    await loadChatHistory(state);
+    expect(authoritativeHistoryAppliedForRun(state, "run-1", "main")).toBe(true);
+
+    // The post-steer final is a new answer, not a replay of the applied row.
+    const live = replyText("After steer answer");
+    receive(state, "final", { message: live });
+    expect(state.chatMessages.some((row) => row === live)).toBe(true);
+
+    // Its own persistence converges back to exactly one copy per row.
+    rememberAuthoritativeTerminal({
+      host: state,
+      event: { key: "main", runId: "run-1", hasActiveRun: false },
+      payload: { message: savedFinal, messageId: "post-steer-message" },
+      matchesChat: true,
+      runIdBeforeApply: "run-1",
+    });
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([user, preSteer, steerRow, savedFinal]);
+  });
+
+  it("retires the live copy of a pure-image final (#149153 P2)", async () => {
+    const user = userText("Ask", { id: "user-1", seq: 1 });
+    const saved = {
+      role: "assistant",
+      content: [{ type: "image", artifactId: "art-1" }],
+      __openclaw: { id: "image-final", seq: 2, runId: "run-1" },
+    };
+    const request = vi.fn().mockResolvedValue({ messages: [user, saved], sessionId: "session-1" });
+    const state = createHistoryState(request, {
+      chatRunId: "run-1",
+      currentSessionId: "session-1",
+    });
+
+    const liveTerminal = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "image", artifactId: "art-1" }] },
+      "run-1",
+    );
+    publishChatSessionProjectionMessages(state, [user, liveTerminal], {
+      scope: { sessionKey: "main" },
+    });
+
+    // The image-only final persists while the run still reads active.
+    rememberAuthoritativeTerminal({
+      host: state,
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      payload: { message: saved, messageId: "image-final" },
+      matchesChat: true,
+      runIdBeforeApply: "run-1",
+    });
+
+    await loadChatHistory(state);
+
+    expect(state.chatMessages).toEqual([user, saved]);
+    expect(authoritativeHistoryAppliedForRun(state, "run-1", "main")).toBe(true);
+  });
 });
