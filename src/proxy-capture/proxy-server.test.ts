@@ -50,17 +50,6 @@ async function startProxy() {
   return { proxy, events, captured };
 }
 
-async function cleanupTestRoot(): Promise<void> {
-  await closeOpenClawStateDatabaseAsync();
-  vi.unstubAllEnvs();
-  if (!testRoot) {
-    return;
-  }
-  const root = testRoot;
-  testRoot = undefined;
-  await rm(root, { recursive: true, force: true });
-}
-
 async function listenOrigin(server: Server, path = "") {
   const listening = once(server, "listening");
   server.listen(0, "127.0.0.1");
@@ -75,9 +64,11 @@ async function listenOrigin(server: Server, path = "") {
   };
 }
 
-async function startLargeBodyOrigin(responseBody: string) {
+async function startOrigin(responseBody = "ok") {
   let receivedBody = "";
+  let requests = 0;
   const server = createHttpServer((req, res) => {
+    requests++;
     req.setEncoding("utf8");
     req.on("data", (chunk) => {
       receivedBody += chunk;
@@ -87,6 +78,7 @@ async function startLargeBodyOrigin(responseBody: string) {
   return {
     ...(await listenOrigin(server, "/capture")),
     receivedRequestBody: () => receivedBody,
+    requestCount: () => requests,
     responseBody,
   };
 }
@@ -117,14 +109,6 @@ async function startResponseErrorOrigin() {
   return listenOrigin(server);
 }
 
-type ProxyResponseResult = {
-  body: string;
-  complete: boolean;
-  errorMessage?: string;
-  statusCode?: number;
-  statusLine?: string;
-};
-
 type ProxyClientOptions = {
   abortAfterBytes?: number;
   abortWithReset?: boolean;
@@ -137,11 +121,8 @@ async function getThroughProxy(
   targetUrl: string,
   requestBody?: string,
   options: ProxyClientOptions = {},
-): Promise<ProxyResponseResult & { aborted: boolean; bodyBytes: number }> {
-  const proxy = new URL(proxyUrl);
-  const req = httpRequest({
-    hostname: proxy.hostname,
-    port: proxy.port,
+) {
+  const req = httpRequest(proxyUrl, {
     path: targetUrl,
     method: requestBody === undefined ? "GET" : "POST",
     headers: {
@@ -302,12 +283,17 @@ afterEach(async () => {
     await stop();
   }
   vi.restoreAllMocks();
-  await cleanupTestRoot();
+  await closeOpenClawStateDatabaseAsync();
+  vi.unstubAllEnvs();
+  if (testRoot) {
+    await rm(testRoot, { recursive: true, force: true });
+    testRoot = undefined;
+  }
 });
 
 describe("startDebugProxyServer", () => {
   it("caps UTF-8 previews on character boundaries while forwarding full bodies", async () => {
-    const origin = await startLargeBodyOrigin(`${"r".repeat(8191)}😀tail`);
+    const origin = await startOrigin(`${"r".repeat(8191)}😀tail`);
     const { proxy, captured } = await startProxy();
     const requestBody = `${"q".repeat(8191)}étail`;
 
@@ -488,9 +474,9 @@ describe("startDebugProxyServer", () => {
     expect(await captured()).toContainEqual(expect.objectContaining({ direction, kind: "error" }));
   });
 
-  it("returns 504 when a CONNECT upstream opening attempt times out", async () => {
+  it.each(["timeout", "connected"])("settles CONNECT opening on %s", async (outcome) => {
     const { captured, upstream, client, connected, openingTimeout } =
-      await startConnectProxy("unreachable.example:443");
+      await startConnectProxy("example.com:443");
     let response = "";
     client.setEncoding("utf8");
     client.on("data", (chunk) => {
@@ -500,11 +486,14 @@ describe("startDebugProxyServer", () => {
       client.once("close", resolve);
     });
 
-    await expect(connected).resolves.toMatchObject({
-      hostname: "unreachable.example",
-      port: 443,
-    });
+    await expect(connected).resolves.toMatchObject({ hostname: "example.com", port: 443 });
     expect(openingTimeout).toHaveBeenCalledWith(30_000, expect.any(Function));
+    if (outcome === "connected") {
+      upstream.emit("connect");
+      expect(openingTimeout).toHaveBeenCalledWith(0);
+      expect(upstream.listenerCount("timeout")).toBe(0);
+      return;
+    }
     upstream.emit("timeout");
     await clientClosed;
 
@@ -519,15 +508,6 @@ describe("startDebugProxyServer", () => {
         protocol: "connect",
       }),
     );
-  });
-
-  it("removes the CONNECT opening timeout after the upstream socket connects", async () => {
-    const { upstream, connected, openingTimeout } = await startConnectProxy("example.com:443");
-    await connected;
-    upstream.emit("connect");
-
-    expect(openingTimeout).toHaveBeenCalledWith(0);
-    expect(upstream.listenerCount("timeout")).toBe(0);
   });
 });
 
@@ -566,18 +546,6 @@ async function requestRawThroughProxy(proxyUrl: string, request: string): Promis
   return data;
 }
 
-async function startCanaryOrigin() {
-  let requests = 0;
-  const origin = await listenOrigin(
-    createHttpServer((_req, res) => {
-      requests++;
-      res.end("ok");
-    }),
-    "/metadata",
-  );
-  return { ...origin, requestCount: () => requests };
-}
-
 describe("debug proxy managed-proxy direct upstream policy", () => {
   function expectForbidden(response: string) {
     expect(response).toContain("403 Forbidden");
@@ -595,7 +563,7 @@ describe("debug proxy managed-proxy direct upstream policy", () => {
     if (allow) {
       vi.stubEnv("OPENCLAW_DEBUG_PROXY_ALLOW_DIRECT_CONNECT_WITH_MANAGED_PROXY", "1");
     }
-    const origin = await startCanaryOrigin();
+    const origin = await startOrigin();
     const { proxy } = await startProxy();
     const response = await requestThroughProxy(proxy.proxyUrl, origin.url);
     if (allow) {

@@ -138,9 +138,7 @@ function pendingResponse(chunks: Buffer[]) {
     new ReadableStream<Uint8Array>({
       start(value) {
         controller = value;
-        for (const chunk of chunks) {
-          controller.enqueue(chunk);
-        }
+        chunks.forEach((chunk) => controller.enqueue(chunk));
       },
     }),
     { status: 200, headers: { "content-type": "text/plain" } },
@@ -152,15 +150,11 @@ function pendingResponse(chunks: Buffer[]) {
     const read = reader.read.bind(reader);
     let reads = 0;
     reader.read = () => {
-      const last = ++reads === chunks.length + 1;
-      if (last) {
-        pending.resolve();
+      if (++reads !== chunks.length + 1) {
+        return read();
       }
-      return read().finally(() => {
-        if (last) {
-          settled.resolve();
-        }
-      });
+      pending.resolve();
+      return read().finally(settled.resolve);
     };
     Object.defineProperty(captured.body, "getReader", { value: () => reader });
     return captured;

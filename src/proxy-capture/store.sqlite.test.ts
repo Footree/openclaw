@@ -161,11 +161,12 @@ describe("DebugProxyCaptureStore", () => {
     expect(store.summarizeSessionCoverage("missing")).toMatchObject({ totalEvents: 0 });
   });
 
-  it("keeps the cached store open until the last lease releases", () => {
+  it("retains leased stores, reopens released stores, and closes independent paths", () => {
     const options = { env: makeStateEnv() };
 
     const first = acquireDebugProxyCaptureStore(options);
     const second = acquireDebugProxyCaptureStore(options);
+    const other = acquireDebugProxyCaptureStore({ env: makeStateEnv() });
 
     expect(second.store).toBe(first.store);
     first.release();
@@ -173,12 +174,16 @@ describe("DebugProxyCaptureStore", () => {
 
     second.release();
     expect(first.store.isClosed).toBe(true);
+    expect(other.store.isClosed).toBe(false);
     first.store.close();
     expect(first.store.isClosed).toBe(true);
 
     const reopened = getDebugProxyCaptureStore(options);
     expect(Object.is(reopened, first.store)).toBe(false);
     expect(reopened.isClosed).toBe(false);
+    closeDebugProxyCaptureStore();
+    expect(other.store.isClosed).toBe(true);
+    other.release();
   });
 
   it.each(["quiet", "active"] as const)(
@@ -240,19 +245,6 @@ describe("DebugProxyCaptureStore", () => {
     expect(() => upsertSession(store, { id: "preclaim-session", sourceProcess: "cli" })).toThrow(
       OpenClawStateOwnershipError,
     );
-  });
-
-  it("tracks and closes cached stores independently across paths", () => {
-    const first = acquireDebugProxyCaptureStore({ env: makeStateEnv() });
-    const second = acquireDebugProxyCaptureStore({ env: makeStateEnv() });
-
-    first.release();
-    expect(first.store.isClosed).toBe(true);
-    expect(second.store.isClosed).toBe(false);
-
-    closeDebugProxyCaptureStore();
-    expect(second.store.isClosed).toBe(true);
-    second.release();
   });
 
   it("preserves the shipped path-based Plugin SDK overloads", () => {
@@ -455,22 +447,6 @@ describe("DebugProxyCaptureStore", () => {
     },
   );
 
-  it("deduplicates complete payloads without replacing stored metadata", () => {
-    const store = makeStore();
-    const firstPayload = persistEventPayload(store, {
-      data: '{"ok":true}',
-      contentType: "application/json",
-    });
-    const sql = "SELECT * FROM capture_blobs WHERE blob_id = ?";
-    const firstBlob = queryRow(store, sql, firstPayload.dataBlobId ?? "");
-    const duplicateBlob = store.persistPayload(Buffer.from('{"ok":true}'), "text/plain");
-    expect(duplicateBlob).toMatchObject({
-      blobId: firstPayload.dataBlobId,
-      contentType: "text/plain",
-    });
-    expect(queryRow(store, sql, duplicateBlob.blobId)).toEqual(firstBlob);
-  });
-
   it.each(["shared", "path"] as const)(
     "preserves %s diagnostic grouping, session scope, and native read retries",
     (kind) => {
@@ -614,6 +590,16 @@ describe("DebugProxyCaptureStore", () => {
     const store = makeStore(kind, env);
     const data = `${"x".repeat(8191)}étail`;
     const sharedPayload = persistEventPayload(store, { data, contentType: "text/plain" });
+    if (kind === "shared") {
+      const sql = "SELECT * FROM capture_blobs WHERE blob_id = ?";
+      const original = queryRow(store, sql, sharedPayload.dataBlobId ?? "");
+      const duplicate = store.persistPayload(Buffer.from(data), "application/json");
+      expect(duplicate).toMatchObject({
+        blobId: sharedPayload.dataBlobId,
+        contentType: "application/json",
+      });
+      expect(queryRow(store, sql, duplicate.blobId)).toEqual(original);
+    }
 
     for (const sessionId of ["session-a", "session-b"]) {
       upsertSession(store, { id: sessionId, startedAt: Date.now() });
