@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 89773,
-  "reason": "Early Gateway handoff: startup 270921 to 89773 B gzip and 5 to 3 requests; 540 interleaved observations show faster readiness, refreshed after main snapshot prewarm integration",
+  "startupJsGzipBytes": 89844,
+  "reason": "Early Gateway handoff final build: startup 270921 to 89844 B gzip and 5 to 3 requests; 840 interleaved observations passed across original and refreshed bases",
   "updatedAt": "2026-10-27"
 }
