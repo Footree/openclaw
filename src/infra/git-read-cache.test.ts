@@ -602,20 +602,18 @@ describe("typed Git read ownership", () => {
     vi.useFakeTimers();
     gitRead.mockResolvedValue(emptyDiff);
     const environment = process.env;
-    const reads: string[] = [];
-    const values = {
+    let configPath = "/first";
+    const gitConfigRead = vi.fn(() => configPath);
+    const unrelatedRead = vi.fn(() => "unused");
+    process.env = {
       ...environment,
-      GIT_CONFIG_GLOBAL: "/first",
-      UNRELATED_DIFF_FIXTURE: "unused",
-    };
-    process.env = new Proxy(values, {
-      get(target, property, receiver) {
-        if (property === "GIT_CONFIG_GLOBAL" || property === "UNRELATED_DIFF_FIXTURE") {
-          reads.push(property);
-        }
-        return Reflect.get(target, property, receiver);
+      get GIT_CONFIG_GLOBAL() {
+        return gitConfigRead();
       },
-    });
+      get UNRELATED_DIFF_FIXTURE() {
+        return unrelatedRead();
+      },
+    };
     try {
       const poll = () =>
         runGitReadOperation(
@@ -624,14 +622,14 @@ describe("typed Git read ownership", () => {
         );
       await poll();
       await vi.advanceTimersByTimeAsync(1_001);
-      reads.length = 0;
+      gitConfigRead.mockClear();
       await poll();
       expect(gitRead).toHaveBeenCalledOnce();
-      expect(reads).toEqual(["GIT_CONFIG_GLOBAL"]);
-      values.GIT_CONFIG_GLOBAL = "/second";
+      expect(gitConfigRead).toHaveBeenCalledOnce();
+      configPath = "/second";
       await poll();
       expect(gitRead).toHaveBeenCalledTimes(2);
-      expect(reads).not.toContain("UNRELATED_DIFF_FIXTURE");
+      expect(unrelatedRead).not.toHaveBeenCalled();
     } finally {
       process.env = environment;
     }
