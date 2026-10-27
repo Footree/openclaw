@@ -29,6 +29,10 @@ import {
 import { ClickClackDiscussionService } from "./service.js";
 
 type Harness = ReturnType<typeof createHarness>;
+const nameConflict =
+  'duplicate key value violates unique constraint "channels_workspace_id_name_key"';
+const httpError = (status: number, message: string) =>
+  new ClickClackHttpError(status, message, new Headers());
 async function interruptCreate(h: Harness) {
   const general = (await h.channels())[0]!;
   h.channels
@@ -295,11 +299,7 @@ describe("ClickClack discussion service", () => {
 
   it.each([
     ["create", 400, "UNIQUE constraint failed: channels.workspace_id, channels.name"],
-    [
-      "rename",
-      409,
-      'duplicate key value violates unique constraint "channels_workspace_id_name_key"',
-    ],
+    ["rename", 409, nameConflict],
   ] as const)("retries a name claimed concurrently during %s", async (operation, code, message) => {
     h.setSessionEntry({ label: "Original" });
     if (operation === "rename") {
@@ -314,7 +314,7 @@ describe("ClickClack discussion service", () => {
         { ...general, id: "chn_human", route_id: "human-route", name: "renamed" },
       ]);
     const mutation = operation === "create" ? h.createChannel : h.updateChannel;
-    mutation.mockRejectedValueOnce(new ClickClackHttpError(code, message, new Headers()));
+    mutation.mockRejectedValueOnce(httpError(code, message));
     if (operation === "create") {
       await h.service.open(sessionKey);
     } else {
@@ -359,7 +359,7 @@ describe("ClickClack discussion service", () => {
       const error =
         failure === "transport"
           ? new Error("connection reset")
-          : new ClickClackHttpError(failure, "create failed", new Headers());
+          : httpError(failure, "create failed");
       h.createChannel.mockRejectedValueOnce(error);
       await expect(h.service.open(sessionKey)).rejects.toThrow(error.message);
       if (failure === 403) {
@@ -372,9 +372,13 @@ describe("ClickClack discussion service", () => {
     },
   );
 
-  it.each(["recovered", "forbidden", "conflict"] as const)(
+  it.each([
+    ["recovered", new Error("patch unavailable"), "connection reset"],
+    ["forbidden", httpError(403, "forbidden"), "ClickClack 403: forbidden"],
+    ["conflict", httpError(409, nameConflict), "relist unavailable"],
+  ] as const)(
     "retains an adoption reservation after $0 failure",
-    async (failure) => {
+    async (failure, error, expectedError) => {
       let externalRef: string | undefined;
       if (failure === "recovered") {
         await recoverLostResponse(h, { name: "title" }, "connection reset");
@@ -389,28 +393,12 @@ describe("ClickClack discussion service", () => {
           h.channels.mockResolvedValue([room]);
         }
       }
-      const error =
-        failure === "recovered"
-          ? new Error("patch unavailable")
-          : new ClickClackHttpError(
-              failure === "forbidden" ? 403 : 409,
-              failure === "forbidden"
-                ? "forbidden"
-                : 'duplicate key value violates unique constraint "channels_workspace_id_name_key"',
-              new Headers(),
-            );
       if (failure === "forbidden") {
         h.updateChannel.mockRejectedValue(error);
       } else {
         h.updateChannel.mockRejectedValueOnce(error);
       }
-      await expect(h.service.open(sessionKey)).rejects.toThrow(
-        failure === "recovered"
-          ? "connection reset"
-          : failure === "forbidden"
-            ? "ClickClack 403: forbidden"
-            : "relist unavailable",
-      );
+      await expect(h.service.open(sessionKey)).rejects.toThrow(expectedError);
       expect(h.generationStore.lookup(sessionKey)).toMatchObject({
         pending: externalRef ? { externalRef } : { sessionId: "session-id" },
       });
