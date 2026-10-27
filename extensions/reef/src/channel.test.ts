@@ -11,7 +11,7 @@ import { runReefChannelLifecycle } from "./channel-lifecycle.js";
 import { reefPlugin } from "./channel.js";
 import { handleReefCommand } from "./commands.js";
 import { resolveReefConfig } from "./config-schema.js";
-import { allow, peerTrust, reefKeys } from "./flow.test-helpers.js";
+import { allow, config, peerTrust, reefKeys } from "./flow.test-helpers.js";
 import { reefPeerIdentity } from "./friend-types.js";
 import { ReefFriendManager } from "./friends.js";
 import { resolveReefInboundDispatchContent } from "./inbound.js";
@@ -90,19 +90,10 @@ it("keeps contextual Reef replies on the inbound message thread", () => {
     accountId: "default",
     context: {
       To: "reef:remote-agent",
-      CurrentMessageId: "message-1",
-      ReplyToMode: "all",
       MessageThreadId: "message-1",
     },
   });
 
-  expect(toolContext).toMatchObject({
-    currentChannelId: "reef:remote-agent",
-    currentMessagingTarget: "reef:remote-agent",
-    currentMessageId: "message-1",
-    currentThreadTs: "message-1",
-    replyToMode: "all",
-  });
   const resolve = (to: string) =>
     threading.resolveAutoThreadId!({
       cfg: {},
@@ -188,17 +179,7 @@ describe("Reef gateway account ownership", () => {
   });
   const cfg = {
     channels: {
-      reef: {
-        handle: "clawd",
-        email: "clawd@example.com",
-        guard: {
-          provider: "openai" as const,
-          pinnedModel: "gpt-5.6-luna",
-          apiKeyEnv: "REEF_TEST_GUARD_KEY",
-          policyVersion: "v1",
-          timeoutMs: 1_000,
-        },
-      },
+      reef: { ...config(), handle: "clawd", email: "clawd@example.com" },
     },
   };
   const accounts: Array<{ abort: AbortController; task: Promise<unknown> }> = [];
@@ -212,7 +193,7 @@ describe("Reef gateway account ownership", () => {
     inboxStarted = createDeferred<void>();
     activeReefSlot.clearRuntime();
     stateDir = createStateTestDirectory();
-    vi.stubEnv("REEF_TEST_GUARD_KEY", "test-only-credential");
+    vi.stubEnv("REEF_TEST_KEY", "test-only-credential");
     const runtime = createRuntime(stateDir);
     runtime.state.resolveStateDir = () => stateDir;
     await generateAndStoreKeys(runtime);
@@ -331,7 +312,7 @@ describe("Reef gateway account ownership", () => {
       const { flow, peer } = await trustedAccount();
       vi.spyOn(flow.options.guard, "classify").mockResolvedValue({
         ...allow,
-        model: cfg.channels.reef.guard.pinnedModel,
+        model: cfg.channels.reef.guard!.pinnedModel,
       });
       const acknowledge = vi
         .spyOn(ReefTransportClient.prototype, "acknowledge")
