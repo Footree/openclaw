@@ -34,9 +34,11 @@ vi.mock("@line/bot-sdk", async (importOriginal) => {
     messagingApi: { ...actual.messagingApi, MessagingApiClient: Client },
   };
 });
-vi.mock("openclaw/plugin-sdk/channel-activity-runtime", () => ({
-  recordChannelActivity: activity,
-}));
+vi.mock("openclaw/plugin-sdk/channel-activity-runtime", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("openclaw/plugin-sdk/channel-activity-runtime")>();
+  return { ...actual, recordChannelActivity: activity };
+});
 vi.mock("openclaw/plugin-sdk/runtime-env", async () => {
   const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/runtime-env")>(
     "openclaw/plugin-sdk/runtime-env",
@@ -46,9 +48,10 @@ vi.mock("openclaw/plugin-sdk/runtime-env", async () => {
     logVerbose: verbose,
   };
 });
-vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({
-  resolvePinnedHostnameWithPolicy: resolveHost,
-}));
+vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/ssrf-runtime")>();
+  return { ...actual, resolvePinnedHostnameWithPolicy: resolveHost };
+});
 const send = await import("./send.js");
 const LINE_TEST_CFG = {
   channels: { line: { channelAccessToken: "line-token", channelSecret: "line-secret" } },
