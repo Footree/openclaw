@@ -278,3 +278,5 @@ consumed input alone never proves a delivered answer. Effect checks cover the
 explicit append markers, not arbitrary tool effects. Events missed while the
 socket is disconnected limit exact recovery/delivery attribution; durable answer
 markers and receipts still identify stuck inputs and duplicate answers.
+Idle-session transcript activity during reconnect also fails the recovery check;
+silence across that disconnected interval remains unknown.

@@ -197,7 +197,7 @@ export function summarizeRestartStress(params: {
       );
       const starts = events.filter(
         (event) =>
-          event.at >= (restart.returnedAt ?? Infinity) &&
+          event.at >= (exitedAt ?? Infinity) &&
           event.at < end &&
           event.event === "agent" &&
           event.payload.sessionKey === sessionKey &&
@@ -205,6 +205,14 @@ export function summarizeRestartStress(params: {
           record(event.payload.data).phase === "start",
       );
       const active = restart.active.includes(sessionKey);
+      const idleMessages = active
+        ? []
+        : messages(sessionKey).flatMap((message) => {
+            const at = record(message["__openclaw"]).recordTimestampMs;
+            return typeof at === "number" && exitedAt !== undefined && at > exitedAt && at < end
+              ? [{ at, role: message.role, id: record(message["__openclaw"]).id }]
+              : [];
+          });
       const expected = rows.filter(
         (input) => input.accepted && input.sessionKey === sessionKey && input.sentAt < restart.at,
       );
@@ -235,6 +243,7 @@ export function summarizeRestartStress(params: {
         exitedAt,
         completions,
         starts: starts.map((event) => ({ at: event.at, runId: event.payload.runId })),
+        idleMessages,
         status:
           newInput || !restart.returnedAt
             ? "unknown"
@@ -244,9 +253,9 @@ export function summarizeRestartStress(params: {
                 : once
                   ? "pass"
                   : "unknown"
-              : starts.length
+              : starts.length || idleMessages.length
                 ? "fail"
-                : "pass",
+                : "unknown", // Disconnected silence does not prove idle inactivity.
       };
     });
   });
@@ -340,7 +349,7 @@ export function summarizeRestartStress(params: {
           ? "unknown"
           : "pass",
       details:
-        "One unique durable completion after old-process exit, with no duplicate sentinel effects and no new input, proves outcome recovery across disconnect gaps; missing timestamps stay inconclusive. Provider attempt count is not asserted.",
+        "Unique durable completion after old-process exit and no new input proves outcome recovery. Idle activity checks include durable rows before reconnect; disconnected silence remains inconclusive. Provider attempt count is not asserted.",
       evidence: recovery,
     },
     {

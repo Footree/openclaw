@@ -427,7 +427,8 @@ export async function runRestartStress(argv: string[]) {
       if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
         throw new Error("Owned Gateway missing before chaos injection");
       }
-      const closed = once(child, "close").then(([code, signal]) => ({
+      // Pipe closure can wait on descendants; bounded fixture cleanup owns those.
+      const exited = once(child, "exit").then(([code, signal]) => ({
         code,
         signal,
         at: Date.now(),
@@ -465,10 +466,11 @@ export async function runRestartStress(argv: string[]) {
         `Reply DONE_${kind}-draining.`,
         "followup",
       );
-      const { code, signal, at: exitedAt } = await closed;
+      const { code, signal, at: exitedAt } = await exited;
       record.exitCode = typeof code === "number" ? code : null;
       record.signal = typeof signal === "string" ? signal : null;
       record.shutdownMs = exitedAt - record.at;
+      await instance.stopGateway();
       await client?.stopAndWait();
       client = undefined;
       await instance.startGateway();
@@ -537,9 +539,9 @@ export async function runRestartStress(argv: string[]) {
     const child = instance.child;
     const cleanupAt = Date.now();
     if (child && child.exitCode === null && child.signalCode === null) {
-      const closed = once(child, "close");
+      const exited = once(child, "exit");
       child.kill("SIGTERM");
-      await closed;
+      await exited;
     }
     const shutdownMs = Date.now() - cleanupAt;
     await instance

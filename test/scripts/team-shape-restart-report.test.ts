@@ -176,3 +176,34 @@ it("flags duplicate effects and final deliveries and visible errors after recove
   });
   expect(raced.report.invariants.find((item) => item.id === 2)?.status).toBe("unknown");
 });
+
+it("detects idle-session activity before reconnect and leaves disconnected silence unknown", () => {
+  const restart = {
+    kind: "managed",
+    at: 40,
+    returnedAt: 50,
+    shutdownMs: 5,
+    active: [input.sessionKey],
+    idle: ["idle"],
+  };
+  const histories = {
+    [input.sessionKey]: {
+      messages: [
+        { role: "assistant", content: "DONE_original", __openclaw: { recordTimestampMs: 60 } },
+      ],
+    },
+    idle: {
+      messages: [
+        { role: "assistant", content: "Unrequested work", __openclaw: { recordTimestampMs: 47 } },
+      ],
+    },
+  };
+  const resumed = summarizeRestartStress({ ...capture, restarts: [restart], histories });
+  expect(resumed.report.invariants.find((item) => item.id === 2)?.status).toBe("fail");
+  const silent = summarizeRestartStress({
+    ...capture,
+    restarts: [restart],
+    histories: { ...histories, idle: { messages: [] } },
+  });
+  expect(silent.report.invariants.find((item) => item.id === 2)?.status).toBe("unknown");
+});
