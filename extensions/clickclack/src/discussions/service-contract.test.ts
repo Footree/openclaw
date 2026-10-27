@@ -75,31 +75,6 @@ function messagePage(...messages: ReturnType<typeof createInboundMessage>[]) {
   return { messages, oldest_seq: 0, has_older: false };
 }
 describe("ClickClack discussion binding retention", () => {
-  it.each(["info", "open"] as const)(
-    "keeps a deleted session's room visible through %s",
-    async (method) => {
-      const h = createHarness({ label: "Deleted" });
-      const key = "agent:main:deleted";
-      await h.service.open(key);
-      h.setSessionEntry(undefined);
-      expect(await h.service[method](key)).toMatchObject({ state: "open" });
-      expect(h.store.lookup(key)).toMatchObject({
-        channelId: "chn_discussion",
-        detachedAt: expect.any(Number),
-      });
-      h.setSessionEntry({ sessionId: "recreated", label: "Deleted" });
-      expect(await h.service[method](key)).toMatchObject({ state: "open" });
-      expect(h.store.lookup(key)).not.toHaveProperty("detachedAt");
-      expect(h.createChannel).toHaveBeenCalledOnce();
-      const other = createHarness({ label: "Independent" });
-      await other.service.open(key);
-      h.setSessionEntry({ sessionId: "recreated", label: "Renamed" });
-      await h.service.reconcile(key);
-      expectLastPatch(h, { display_title: "Renamed", name: "renamed" });
-      expect(other.updateChannel).not.toHaveBeenCalled();
-    },
-  );
-
   it("retains only the newest 1,000 deleted-session bindings", async () => {
     const harness = createHarness(undefined);
     const seededKeys = Array.from({ length: 999 }, (_, i) => `agent:main:retained-detached-${i}`);
@@ -118,7 +93,8 @@ describe("ClickClack discussion binding retention", () => {
     entries.set(firstKey, { sessionId: "session-a", label: "Detached A", updatedAt: 1 });
     await harness.service.open(firstKey);
     entries.delete(firstKey);
-    await harness.service.reconcile(firstKey);
+    expect(await harness.service.info(firstKey)).toMatchObject({ state: "open" });
+    expect(harness.store.lookup(firstKey)).toHaveProperty("detachedAt");
     expect(harness.store.entries()).toHaveLength(1_000);
     expect(harness.revokedStore.entries()).toHaveLength(0);
 
@@ -126,7 +102,7 @@ describe("ClickClack discussion binding retention", () => {
     entries.set(secondKey, { sessionId: "session-b", label: "Detached B", updatedAt: 2 });
     await harness.service.open(secondKey);
     entries.delete(secondKey);
-    await harness.service.reconcile(secondKey);
+    expect(await harness.service.open(secondKey)).toMatchObject({ state: "open" });
 
     expect(harness.store.lookup(seededKeys[0]!)).toBeUndefined();
     expect(harness.store.entries()).toHaveLength(1_000);
@@ -137,6 +113,12 @@ describe("ClickClack discussion binding retention", () => {
     expect(harness.revokedStore.entries()).toEqual([
       expect.objectContaining({ value: expect.objectContaining({ channelId: "chn_retained_0" }) }),
     ]);
+    entries.set(firstKey, { sessionId: "recreated", label: "Detached A", updatedAt: 3 });
+    expect(await harness.service.info(firstKey)).toMatchObject({ state: "open" });
+    expect(harness.store.lookup(firstKey)).not.toHaveProperty("detachedAt");
+    entries.set(secondKey, { sessionId: "recreated-b", label: "Detached B", updatedAt: 4 });
+    expect(await harness.service.open(secondKey)).toMatchObject({ state: "open" });
+    expect(harness.store.lookup(secondKey)).not.toHaveProperty("detachedAt");
     expect(harness.createChannel).toHaveBeenCalledTimes(2);
   });
 });

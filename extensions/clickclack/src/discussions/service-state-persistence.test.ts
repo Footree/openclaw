@@ -1,5 +1,6 @@
 import "./service-http-mock.test-support.js";
 import "./session-authority.test-support.js";
+import assert from "node:assert/strict";
 import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type {
@@ -178,9 +179,7 @@ async function activeRoute(input: Parameters<typeof resolveClickClackDiscussionR
   return result.route;
 }
 function requireBinding(binding: ClickClackDiscussionBinding | undefined) {
-  if (!binding) {
-    throw new Error("Expected the persisted discussion binding");
-  }
+  assert(binding, "Expected the persisted discussion binding");
   return binding;
 }
 
@@ -224,9 +223,8 @@ function generationFixture(
   const f = createHarness(
     { label: "Title" },
     {
-      openSyncKeyedStore: <T>(storeOptions: OpenKeyedStoreOptions) => {
-        return createPluginStateSyncKeyedStoreForTests<T>("clickclack", { ...storeOptions, env });
-      },
+      openSyncKeyedStore: <T>(storeOptions: OpenKeyedStoreOptions) =>
+        createPluginStateSyncKeyedStoreForTests<T>("clickclack", { ...storeOptions, env }),
     },
   );
   f.runtime.state.openKeyedStoreV2 = <T>(
@@ -576,7 +574,7 @@ describe("ClickClack pending generation persistence", () => {
     await expect(f.service.open(sessionKey)).rejects.toThrow("lost create response");
     const originalRef = f.createChannel.mock.calls[0]?.[1].external_ref;
     expect(await generationStore(f.env).lookup(sessionKey)).toMatchObject({
-      pending: expect.objectContaining({ externalRef: originalRef }),
+      pending: { externalRef: originalRef },
     });
     await f.service.cleanup();
     await closeOpenClawStateDatabaseAsync();
