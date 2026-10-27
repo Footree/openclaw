@@ -25,6 +25,11 @@ export async function startRestartStressProvider(options: {
   const controller = new AbortController();
   const server = createServer((request, response) => {
     void (async () => {
+      if (request.method !== "POST" || request.url !== "/v1/responses") {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
       const chunks: Buffer[] = [];
       for await (const chunk of request) {
         chunks.push(Buffer.from(chunk));
@@ -107,7 +112,7 @@ export async function startRestartStressProvider(options: {
       }
       body.model = options.model;
       controller.signal.throwIfAborted();
-      const upstream = await fetch(`https://api.openai.com${request.url}`, {
+      const upstream = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
           "content-type": "application/json",

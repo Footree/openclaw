@@ -236,8 +236,9 @@ For an approved live campaign replace `--dry` with
 There is deliberately no live-model default. The private regular key file must
 have no group/other permissions. Only the Gateway launcher reads it into its
 environment; the controller never reads, copies, or writes its contents. A local
-OpenAI-compatible proxy forwards authorization in memory and records request
-metadata only. It injects a bounded, OpenAI-shaped TPM 429 window for the synthetic
+Responses proxy accepts only `POST /v1/responses`, forwards to that fixed OpenAI
+endpoint, and records request metadata only. It forwards authorization in memory.
+It injects a bounded, OpenAI-shaped TPM 429 window for the synthetic
 primary model; the configured fallback uses the approved live model. Both routes
 forward to that model. Three real upstream 429s within one minute stop the campaign.
 The proxy does not persist headers or request/response bodies.

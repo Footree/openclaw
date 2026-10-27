@@ -11,13 +11,14 @@ import { appendFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { isGatewayProtocolResponseError } from "../../packages/gateway-client/src/protocol-request.ts";
 import { isRecord } from "../../packages/normalization-core/src/record-coerce.ts";
-import { writeGatewayRestartIntentSync } from "../../src/infra/restart-intent.ts";
 import { connectRestartClient } from "../../test/gateway-restart.test-support.ts";
 import { createOpenClawTestInstance } from "../../test/helpers/openclaw-test-instance.ts";
 import { BASE_GATEWAY_BENCH_CONFIG } from "../lib/gateway-bench-runtime.ts";
+import { runManagedCommand } from "../lib/managed-child-process.mts";
 import { startRestartStressProvider } from "./team-shape-restart-provider.ts";
 import {
   summarizeRestartStress,
@@ -194,10 +195,12 @@ export async function runRestartStress(argv: string[]) {
           providers: { openai: providerConfig() },
         },
         agents: {
+          ownership: "explicit",
           defaults: {
             workspace,
             model: { primary, fallbacks: [fallback] },
             utilityModel: fallback,
+            modelPolicy: { allow: [primary, fallback] },
             models: Object.fromEntries(
               [primary, fallback].map((ref) => [
                 ref,
@@ -266,6 +269,9 @@ export async function runRestartStress(argv: string[]) {
     client = await connectRestartClient(
       instance,
       {
+        env: instance.env,
+        deviceIdentity: null,
+        caps: ["tool-events"],
         onEvent(event) {
           events.push({ at: Date.now(), event: event.event, payload: event.payload });
         },
@@ -421,17 +427,33 @@ export async function runRestartStress(argv: string[]) {
       if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
         throw new Error("Owned Gateway missing before chaos injection");
       }
-      const closed = once(child, "close");
-      if (
-        kind === "managed" &&
-        !writeGatewayRestartIntentSync({
+      const closed = once(child, "close").then(([code, signal]) => ({
+        code,
+        signal,
+        at: Date.now(),
+      }));
+      if (kind === "managed") {
+        // Cross-revision replay must use the candidate's own state/schema owner.
+        const writer = pathToFileURL(path.join(candidate, "src/infra/restart-intent.ts")).href;
+        const code = await runManagedCommand({
+          bin: process.execPath,
+          args: [
+            "--import",
+            "./scripts/tsx.mjs",
+            "--input-type=module",
+            "--eval",
+            `const { writeGatewayRestartIntentSync } = await import(${JSON.stringify(writer)});
+             if (!writeGatewayRestartIntentSync({ targetPid: ${child.pid},
+               intent: { reason: "gateway.restart", force: true, waitMs: 100 } })) process.exitCode = 1;`,
+          ],
+          cwd: candidate,
           env: instance.env,
-          targetPid: child.pid,
-          intent: { reason: "gateway.restart", force: true, waitMs: 100 },
-        })
-      ) {
-        throw new Error("Managed restart intent refused");
+          signal: abort.signal,
+          timeoutMs: 120_000,
+        });
+        if (code !== 0) throw new Error(`Managed restart intent refused (exit ${code})`);
       }
+      record.at = Date.now();
       child.kill(kind === "sigkill" ? "SIGKILL" : "SIGTERM");
       // This send is intentionally not retried: an uncertain acknowledgment remains evidence.
       await send(
@@ -441,10 +463,10 @@ export async function runRestartStress(argv: string[]) {
         `Reply DONE_${kind}-draining.`,
         "followup",
       );
-      const [code, signal] = await closed;
+      const { code, signal, at: exitedAt } = await closed;
       record.exitCode = typeof code === "number" ? code : null;
       record.signal = typeof signal === "string" ? signal : null;
-      record.shutdownMs = Date.now() - record.at;
+      record.shutdownMs = exitedAt - record.at;
       await client?.stopAndWait();
       client = undefined;
       await instance.startGateway();
