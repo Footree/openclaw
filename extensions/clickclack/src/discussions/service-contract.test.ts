@@ -122,9 +122,7 @@ describe("ClickClack discussion binding retention", () => {
     expect(harness.store.entries()).toHaveLength(1_000);
     expect(harness.revokedStore.entries()).toHaveLength(0);
 
-    harness.createChannel.mockImplementationOnce(async (_workspaceId, input) =>
-      discussionChannel({ id: "chn_discussion_b", route_id: "discussion-route-b", ...input }),
-    );
+    createResponse(harness, { id: "chn_discussion_b", route_id: "discussion-route-b" });
     entries.set(secondKey, { sessionId: "session-b", label: "Detached B", updatedAt: 2 });
     await harness.service.open(secondKey);
     entries.delete(secondKey);
@@ -196,9 +194,7 @@ describe("ClickClack discussion service contracts", () => {
     h.channels.mockResolvedValue([
       discussionChannel({ id: "chn_general", external_managed: false }),
     ]);
-    createResponse(h, {
-      external_url: undefined,
-    });
+    createResponse(h, { external_url: undefined });
     await expect(h.service.open(sessionKey)).resolves.toMatchObject({ state: "open" });
     expect(h.revokedStore.entries()).toHaveLength(0);
     expect(h.generationStore.lookup(sessionKey)).toBeUndefined();
@@ -381,13 +377,7 @@ describe("ClickClack discussion service contracts", () => {
     if (!current.credentialFingerprint) {
       throw new Error("Expected persisted credentials");
     }
-    const generation = await reserveDiscussionBindingGeneration({
-      runtime: h.runtime,
-      sessionKey,
-      accountId: current.accountId,
-      credentialFingerprint: current.credentialFingerprint,
-      destinationIdentity: TEST_DESTINATION_IDENTITY,
-    });
+    const generation = await reserveGeneration(current.accountId, current.credentialFingerprint);
     await recordPendingDiscussionOpen({
       runtime: h.runtime,
       sessionKey,
@@ -410,13 +400,7 @@ describe("ClickClack discussion service contracts", () => {
 
   it("rejects a pending open when ownership changes after reservation", async () => {
     const credentialFingerprint = discussionCredentialFingerprint("original-token");
-    const generation = await reserveDiscussionBindingGeneration({
-      runtime: h.runtime,
-      sessionKey,
-      accountId: "original",
-      credentialFingerprint,
-      destinationIdentity: TEST_DESTINATION_IDENTITY,
-    });
+    const generation = await reserveGeneration("original", credentialFingerprint);
     await expect(
       recordPendingDiscussionOpen({
         runtime: h.runtime,
@@ -556,6 +540,15 @@ describe("ClickClack discussion service contracts", () => {
     },
   );
 
+  function reserveGeneration(accountId: string, credentialFingerprint: string) {
+    return reserveDiscussionBindingGeneration({
+      runtime: h.runtime,
+      sessionKey,
+      accountId,
+      credentialFingerprint,
+      destinationIdentity: TEST_DESTINATION_IDENTITY,
+    });
+  }
   const mainSessionKey = sessionKey;
   async function setup(options: { persistedBeforeOpening?: boolean } = {}) {
     const { runtime, store } = h;
