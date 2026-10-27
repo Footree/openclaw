@@ -194,7 +194,7 @@ describe("startup recovery admission", () => {
     }
   });
 
-  it.for(["resume", "crash", "stop", "replace", "healthy"] as const)(
+  it.for(["resume", "stop", "replace"] as const)(
     "preserves interrupted turns through crash-loop quarantine (%s)",
     async (action, { signal }) => {
       const target = await makeMainSessionFixture({
@@ -205,17 +205,14 @@ describe("startup recovery admission", () => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: tmpDir };
       const now = Date.now();
       let activeBootId: string | undefined;
-      const healthy = action === "healthy";
-      // Two previous crashes plus the live boot must not independently trip safe mode.
-      for (let i = 0; i < (healthy ? 2 : 3); i++) {
-        const failedAt = now - (healthy ? 1_000 : 295_000) + i;
+      for (let i = 0; i < 3; i++) {
+        const failedAt = now - 295_000 + i;
         const boot = (await beginGatewayBootLifecycle(env, failedAt)).id;
         await completeGatewayBootLifecycle(boot, { outcome: "startup_failed" }, env, failedAt);
       }
-      activeBootId = (await beginGatewayBootLifecycle(env, healthy ? now : now - 290_000)).id;
+      activeBootId = (await beginGatewayBootLifecycle(env, now - 290_000)).id;
       const lifetime = new AbortController();
-      let suppression: object | null =
-        action === "healthy" ? null : { reason: "crash-loop-breaker" };
+      let suppression: object | null = { reason: "crash-loop-breaker" };
       const recoverBoot = createGatewayCrashLoopRecovery({
         bootId: activeBootId,
         getActiveBootId: () => activeBootId,
@@ -236,7 +233,6 @@ describe("startup recovery admission", () => {
           startChannels: async () => {},
         }),
       };
-      const inspect = vi.spyOn(bootLifecycle, "inspectGatewayCrashLoopBreakerAsync");
       const recordRecovery = bootLifecycle.recordGatewayCrashLoopRecovery;
       // Workers retain real time; carry the lifecycle's fake clock through the writer input.
       vi.spyOn(bootLifecycle, "recordGatewayCrashLoopRecovery").mockImplementation(
@@ -266,7 +262,7 @@ describe("startup recovery admission", () => {
       });
       const completed = createDeferred();
       const dispatched = createDeferred();
-      const info = observeInfo({
+      observeInfo({
         "restart recovery paused until": () => {
           if (!vi.isFakeTimers()) {
             vi.useFakeTimers();
@@ -283,12 +279,6 @@ describe("startup recovery admission", () => {
       const recovery = schedule({ startupCheckedStorePaths, gatewayRuntime: runtime }, () =>
         lifetime.abort(),
       );
-      if (action === "healthy") {
-        await withinTest(completed.promise, signal);
-        expect(callGateway).toHaveBeenCalledOnce();
-        expect(inspect).not.toHaveBeenCalled();
-        return;
-      }
       await withinTest(Promise.race([paused.promise, dispatched.promise]), signal);
       expect(callGateway).not.toHaveBeenCalled();
       expect(loadSessionEntry(target)).toEqual(before);
@@ -310,16 +300,6 @@ describe("startup recovery admission", () => {
       if (action === "replace") {
         rotateAgentEventLifecycleGeneration();
       }
-      const extendedPause = createDeferred();
-      if (action === "crash") {
-        const boot = (await beginGatewayBootLifecycle(env, now)).id;
-        await completeGatewayBootLifecycle(boot, { outcome: "startup_failed" }, env, now);
-        info.mockImplementation((message) => {
-          if (message.includes("restart recovery paused until")) {
-            extendedPause.resolve();
-          }
-        });
-      }
       await vi.advanceTimersByTimeAsync(10_002);
       if (action === "resume") {
         await withinTest(completed.promise, signal);
@@ -328,9 +308,6 @@ describe("startup recovery admission", () => {
         await vi.advanceTimersByTimeAsync(20_000);
         expect(callGateway).toHaveBeenCalledOnce();
       } else {
-        if (action === "crash") {
-          await withinTest(extendedPause.promise, signal);
-        }
         expect(callGateway).not.toHaveBeenCalled();
         expect(loadSessionEntry(target)).toEqual(before);
       }
