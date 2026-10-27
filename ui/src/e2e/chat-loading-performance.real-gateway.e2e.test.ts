@@ -35,15 +35,11 @@ type RpcMetric = {
   requestId: string;
   method: string;
   sentMs: number;
-  socketIndex: number;
-  socketOpenedBeforeMeasurement: boolean;
   receivedMs?: number;
   responseBytes?: number;
   sessionKey?: string;
   agentId?: string;
   shortId?: string;
-  requestKey?: string;
-  referenceKey?: string;
   limit?: number;
   maxBytes?: number;
   offset?: number;
@@ -308,10 +304,7 @@ suite.define(() => {
             await (element as LoadingPane).updateComplete;
           });
         };
-        let socketCount = 0;
         page.on("websocket", (socket) => {
-          const socketIndex = ++socketCount;
-          const socketOpenedBeforeMeasurement = !measuring;
           socket.on("framesent", ({ payload }) => {
             if (!measuring) {
               return;
@@ -334,8 +327,6 @@ suite.define(() => {
               requestId: frame.id,
               method: frame.method,
               sentMs: Date.now() - startedAt,
-              socketIndex,
-              socketOpenedBeforeMeasurement,
               ...(typeof params.sessionKey === "string"
                 ? { sessionKey: params.sessionKey }
                 : initialHistory && typeof params.key === "string"
@@ -347,10 +338,6 @@ suite.define(() => {
                 : {}),
               ...(typeof params.agentId === "string" ? { agentId: params.agentId } : {}),
               ...(typeof params.shortId === "string" ? { shortId: params.shortId } : {}),
-              ...(typeof params.key === "string" ? { requestKey: params.key } : {}),
-              ...(isRecord(params.reference) && typeof params.reference.key === "string"
-                ? { referenceKey: params.reference.key }
-                : {}),
               ...(typeof historyParams.limit === "number" ? { limit: historyParams.limit } : {}),
               ...(typeof historyParams.maxBytes === "number"
                 ? { maxBytes: historyParams.maxBytes }
@@ -555,39 +542,6 @@ suite.define(() => {
         expect(selectedStartup).toBeDefined();
         expect(olderHistoryRequests(startupMetrics)).toHaveLength(0);
         const resolutions = selectRpc(startupMetrics, "sessions.resolve");
-        const fixtureKey = (key: string | undefined) =>
-          key === undefined
-            ? "absent"
-            : key === selectedKey
-              ? "selected"
-              : key === homeKey
-                ? "home"
-                : "other";
-        // Keep startup identities after pagination evicts them from the shared RPC ring.
-        recordControlUiE2eFailureFacts(page, {
-          startupResolutions: resolutions.slice(0, 4).map((metric) => ({
-            socketIndex: metric.socketIndex,
-            socketOpenedBeforeMeasurement: metric.socketOpenedBeforeMeasurement,
-            requestKey: fixtureKey(metric.requestKey),
-            referenceKey: fixtureKey(metric.referenceKey),
-            shortId:
-              metric.shortId === undefined
-                ? "absent"
-                : metric.shortId === "12345678"
-                  ? "selected"
-                  : "other",
-            agentId:
-              metric.agentId === undefined
-                ? "absent"
-                : metric.agentId === "main"
-                  ? "main"
-                  : "other",
-            resolvedKey: fixtureKey(metric.resolvedKey),
-            sentMs: metric.sentMs,
-            receivedMs: metric.receivedMs ?? null,
-            resolutionOk: metric.resolutionOk ?? false,
-          })),
-        });
         expect(resolutions).toHaveLength(1);
         expect(resolutions[0]).toMatchObject({
           agentId: "main",
