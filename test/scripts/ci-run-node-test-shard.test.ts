@@ -854,47 +854,68 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     expect(calls.map(([, env]) => env.OPENCLAW_VITEST_MAX_WORKERS)).toEqual(["2", "8"]);
   });
 
-  it("reuses isolated persistent cache slots across serial work", async () => {
-    const scratchDir = makeScratchDir();
-    const persistentRoot = path.join(makeScratchDir(), "persistent");
-    mkdirSync(persistentRoot, { recursive: true });
-    const seenCaches = new Set<string>();
-    const activeCaches = new Set<string>();
-    let sharedWriter = false;
-    const exitCode = await runShardPlans(
-      resolveShardPlans({
-        OPENCLAW_NODE_TEST_GROUPS_JSON: JSON.stringify(
-          ["a", "b", "c", "d"].map((name) => ({
-            configs: [`${name}.config.ts`],
-            shard_name: name,
-          })),
-        ),
-      }),
-      {
-        concurrency: 2,
-        env: { OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT: persistentRoot },
-        runChild: async (_args: string[], childEnv: Record<string, string | undefined>) => {
-          const cache = childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT ?? "";
-          if (activeCaches.has(cache)) {
-            sharedWriter = true;
-          }
-          activeCaches.add(cache);
-          seenCaches.add(cache);
-          await Promise.resolve();
-          activeCaches.delete(cache);
-          return 0;
+  it.each([undefined, "node"])(
+    "reuses isolated Node cache slots without cloning unused Bun seeds under policy %s",
+    async (policy) => {
+      const scratchDir = makeScratchDir();
+      const persistentRoot = path.join(makeScratchDir(), "persistent");
+      for (const prefix of ["vitest-cache", "vitest-cache-bun"]) {
+        const seed = path.join(persistentRoot, `${prefix}-0`);
+        mkdirSync(seed, { recursive: true });
+        writeFileSync(path.join(seed, "transform"), prefix, "utf8");
+      }
+      const unusedBunSlot = path.join(persistentRoot, "vitest-cache-bun-1");
+      mkdirSync(unusedBunSlot);
+      writeFileSync(path.join(unusedBunSlot, "untouched"), "retain", "utf8");
+      const seenCaches = new Set<string>();
+      const activeCaches = new Set<string>();
+      let sharedWriter = false;
+      const exitCode = await runShardPlans(
+        resolveShardPlans({
+          OPENCLAW_NODE_TEST_GROUPS_JSON: JSON.stringify(
+            ["a", "b", "c", "d"].map((name) => ({
+              configs: [`${name}.config.ts`],
+              shard_name: name,
+            })),
+          ),
+        }),
+        {
+          concurrency: 2,
+          env: {
+            OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT: persistentRoot,
+            OPENCLAW_CI_TEST_RUNTIME_POLICY: policy,
+          },
+          runChild: async (_args: string[], childEnv: Record<string, string | undefined>) => {
+            const cache = childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT ?? "";
+            if (activeCaches.has(cache)) {
+              sharedWriter = true;
+            }
+            activeCaches.add(cache);
+            seenCaches.add(cache);
+            await Promise.resolve();
+            activeCaches.delete(cache);
+            return 0;
+          },
+          scratchDir,
         },
-        scratchDir,
-      },
-    );
+      );
 
-    expect(exitCode).toBe(0);
-    expect(sharedWriter).toBe(false);
-    expect([...seenCaches].toSorted()).toEqual([
-      path.join(persistentRoot, "vitest-cache-0"),
-      path.join(persistentRoot, "vitest-cache-1"),
-    ]);
-  });
+      expect(exitCode).toBe(0);
+      expect(sharedWriter).toBe(false);
+      expect([...seenCaches].toSorted()).toEqual([
+        path.join(persistentRoot, "vitest-cache-0"),
+        path.join(persistentRoot, "vitest-cache-1"),
+      ]);
+      const nodeSlot = path.join(persistentRoot, "vitest-cache-1", "transform");
+      expect(readFileSync(nodeSlot, "utf8")).toBe("vitest-cache");
+      writeFileSync(nodeSlot, "changed", "utf8");
+      expect(readFileSync(path.join(persistentRoot, "vitest-cache-0", "transform"), "utf8")).toBe(
+        "vitest-cache",
+      );
+      expect(readFileSync(path.join(unusedBunSlot, "untouched"), "utf8")).toBe("retain");
+      expect(existsSync(path.join(unusedBunSlot, "transform"))).toBe(false);
+    },
+  );
 
   it("clones the restored Node runtime seed into isolated concurrent slots", () => {
     const persistentRoot = makeScratchDir();
