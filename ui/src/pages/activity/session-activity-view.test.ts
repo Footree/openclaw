@@ -2,6 +2,7 @@
 
 import { createComponent } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionActivityPulse } from "../../../../src/shared/session-types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { setAvatarGatewayOrigin } from "../../lib/identity-avatar-context.ts";
 import type { PresenceViewer } from "../../lib/presence-users.ts";
@@ -59,7 +60,6 @@ let container: HTMLDivElement;
 function show(input: Parameters<typeof props>[0] = {}, target = container) {
   renderSessionActivityViewSolid(props(input), target);
 }
-
 beforeEach(() => {
   container = document.createElement("div");
   document.body.replaceChildren(container);
@@ -81,109 +81,90 @@ describe("session activity semantics", () => {
   });
 
   it.each([
-    ["24h", "Last 24 hours", 25, new Date(2026, 0, 2), { hour: "numeric" }],
-    ["7d", "Last 7 days", 8, new Date(2026, 0, 8), { month: "short", day: "numeric" }],
-    ["all", "All time", 12, new Date(2026, 11, 1), { month: "short" }],
-  ] as const)("renders the %s pulse with aligned labels", (time, label, count, last, format) => {
-    const since = new Date(2026, 0, 1).getTime();
-    const hourly = time === "24h";
-    const buckets = Array.from({ length: count }, () => 1);
-    if (hourly) {
-      buckets.fill(0);
-      buckets[10] = 12;
-      buckets[24] = 3;
-    }
-    const input = props({ filters: { personId: null, query: "", time } });
-    input.result!.activityPulse = {
-      since,
-      until:
-        time === "24h"
-          ? last.getTime() + 3_600_000
-          : new Date(
-              last.getFullYear(),
-              last.getMonth() + (time === "all" ? 1 : 0),
-              last.getDate() + (time === "all" ? 0 : 1),
-            ).getTime(),
-      buckets,
-      sessions: 38,
-      ...(hourly ? { started: 12, people: 6 } : {}),
-      running: hourly ? 3 : 0,
-    };
-    show(input);
-    const bars = all(".activity-pulse__bar");
-    const formatter = new Intl.DateTimeFormat(undefined, format);
-    expect(text(".activity-pulse__heading")?.trim()).toBe(label);
-    expect(bars).toHaveLength(count);
-    expect(bars[count - 1]?.getAttribute("data-bucket")).toBe("current");
-    expect(bars[count - 1]?.getAttribute("title")).toBe(
-      formatter.format(last) + (hourly ? " · 3 sessions" : " · 1 session"),
-    );
-    const labels = all(".activity-pulse__axis > span > span");
-    expect(labels).toHaveLength(hourly ? 5 : 3);
-    expect(labels[labels.length - 1]?.textContent).toBe(formatter.format(last));
-    if (hourly) {
-      expect(text(".activity-pulse__stats")?.replace(/\s+/g, " ").trim()).toBe(
-        "38 sessions · 12 started · 6 people · 3 running now",
-      );
-      expect(find(".activity-pulse__running")).not.toBeNull();
-      expect(find('[role="img"]')?.getAttribute("aria-label")).toBe(
-        "Last 24 hours: 38 sessions; busiest " + formatter.format(new Date(2026, 0, 1, 10)),
-      );
-      expect(bars[10]?.getAttribute("style")).toContain("100%");
-      expect(bars[24]?.getAttribute("style")).toContain("25%");
-    } else {
-      expect(find(".activity-pulse__running")).toBeNull();
-    }
-    show();
-    expect(find(".activity-pulse")).toBeNull();
-  });
-
-  it.each([
-    [0, "0 sessions", "0 people", false],
-    [1, "1 session", "1 person", false],
-    [1, "1 session", "1+ people", true],
-  ] as const)("renders count %i (%s, %s, incomplete=%s)", (count, sessions, people, incomplete) => {
-    const input = props({ filters: { personId: null, query: "", time: "all" } });
-    input.result!.peopleIncomplete = incomplete;
-    input.result!.activityPulse = {
-      since: new Date(2026, 0, 1).getTime(),
-      until: new Date(2027, 0, 1).getTime(),
-      buckets: [count, 0],
-      sessions: count,
-      people: count,
-      running: 0,
-    };
-    show(input);
-    const period = new Intl.DateTimeFormat(undefined, { month: "short" }).format(
-      new Date(2026, 0, 1),
-    );
-    expect(text(".activity-pulse__stats")?.replace(/\s+/g, " ").trim()).toBe(
-      sessions + " · " + people + " · 0 running now",
-    );
-    expect(attr('[role="img"]', "aria-label")).toBe(
-      "All time: " + sessions + "; busiest " + period,
-    );
-    expect(attr(".activity-pulse__bar", "title")).toBe(period + " · " + sessions);
-    expect(all(".activity-pulse__stats > span")[1]?.hasAttribute("title")).toBe(incomplete);
-    const note = find('.activity-feed__people-panel [role="status"]');
-    if (incomplete) {
-      expect(note?.textContent).toContain(
-        "People and counts describe visible recorded session associations",
-      );
-      expect(all(".activity-pulse__stats > span")[1]?.getAttribute("title")).toBe(
-        "People and counts describe visible recorded session associations; retained history and this people list may be incomplete.",
-      );
-      expect(find(".activity-feed__people-panel")?.lastElementChild).toBe(note);
-      expect(text(".activity-feed__main")).not.toContain(
-        "People and counts describe visible recorded session associations",
-      );
-      input.result!.peopleIncomplete = false;
+    ["24h", 38, false, "38 sessions · 12 started · 6 people · 3 running now"],
+    ["7d", 0, false, "0 sessions · 0 people · 0 running now"],
+    ["all", 1, false, "1 session · 1 person · 0 running now"],
+    ["all", 1, true, "1 session · 1+ people · 0 running now"],
+  ] as const)(
+    "renders the %s pulse (sessions=%i, incomplete=%s)",
+    (time, count, incomplete, stats) => {
+      const periods = {
+        "24h": [25, new Date(2026, 0, 2), { hour: "numeric" }, "Last 24 hours"],
+        "7d": [8, new Date(2026, 0, 8), { month: "short", day: "numeric" }, "Last 7 days"],
+        all: [12, new Date(2026, 11, 1), { month: "short" }, "All time"],
+      } satisfies Record<string, [number, Date, Intl.DateTimeFormatOptions, string]>;
+      const [length, last, format, label] = periods[time];
+      const hourly = time === "24h";
+      const buckets = Array.from({ length }, () => (count === 0 ? 0 : 1));
+      if (hourly) {
+        buckets.fill(0);
+        buckets[10] = 12;
+        buckets[24] = 3;
+      }
+      const input = props({ filters: { personId: null, query: "", time } });
+      Object.assign(input.result!, {
+        peopleIncomplete: incomplete,
+        activityPulse: {
+          since: new Date(2026, 0, 1).getTime(),
+          until: new Date(2027, 0, 1).getTime(),
+          buckets,
+          sessions: count,
+          people: hourly ? 6 : count,
+          running: hourly ? 3 : 0,
+          ...(hourly ? { started: 12 } : {}),
+        } satisfies SessionActivityPulse,
+      });
       show(input);
-      expect(find('.activity-feed__people-panel [role="status"]')).toBeNull();
-    } else {
-      expect(note).toBeNull();
-    }
-  });
+      const formatter = new Intl.DateTimeFormat(undefined, format);
+      const bars = all(".activity-pulse__bar");
+      const labels = all(".activity-pulse__axis > span > span");
+      expect(text(".activity-pulse__heading")?.trim()).toBe(label);
+      expect(bars).toHaveLength(length);
+      expect(bars[length - 1]?.getAttribute("data-bucket")).toBe("current");
+      const bucketCount = hourly ? "3 sessions" : count === 0 ? "0 sessions" : "1 session";
+      expect(bars[length - 1]?.getAttribute("title")).toBe(
+        formatter.format(last) + " · " + bucketCount,
+      );
+      expect(labels).toHaveLength(hourly ? 5 : 3);
+      expect(labels[labels.length - 1]?.textContent).toBe(formatter.format(last));
+      expect(text(".activity-pulse__stats")?.replace(/\s+/g, " ").trim()).toBe(stats);
+      const peak = new Date(2026, 0, 1, hourly ? 10 : 0);
+      expect(attr('[role="img"]', "aria-label")).toBe(
+        label +
+          ": " +
+          (count === 1 ? "1 session" : count + " sessions") +
+          "; busiest " +
+          formatter.format(peak),
+      );
+      expect(find(".activity-pulse__running") !== null).toBe(hourly);
+      if (hourly) {
+        expect(bars[10]?.getAttribute("style")).toContain("100%");
+        expect(bars[24]?.getAttribute("style")).toContain("25%");
+      } else if (count === 0) {
+        expect(bars[0]?.getAttribute("style")).toContain("0%");
+      }
+      const note = find('.activity-feed__people-panel [role="status"]');
+      expect(all(".activity-pulse__stats > span")[hourly ? 2 : 1]?.hasAttribute("title")).toBe(
+        incomplete,
+      );
+      if (incomplete) {
+        const warning = "People and counts describe visible recorded session associations";
+        expect(note?.textContent).toContain(warning);
+        expect(all(".activity-pulse__stats > span")[1]?.getAttribute("title")).toBe(
+          warning + "; retained history and this people list may be incomplete.",
+        );
+        expect(find(".activity-feed__people-panel")?.lastElementChild).toBe(note);
+        expect(text(".activity-feed__main")).not.toContain(warning);
+        input.result!.peopleIncomplete = false;
+        show(input);
+        expect(find('.activity-feed__people-panel [role="status"]')).toBeNull();
+      } else {
+        expect(note).toBeNull();
+      }
+      show();
+      expect(find(".activity-pulse")).toBeNull();
+    },
+  );
 
   it("shows the list footer when matching sessions exceed the visible rows", () => {
     const input = props({ rows: [row("Visible session", { id: "owner" }, Date.now())] });
