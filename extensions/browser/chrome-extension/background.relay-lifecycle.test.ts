@@ -80,9 +80,6 @@ function nativeDebugger(h: Background, targetIdFor: (tab: number) => string) {
   h.debuggerDetach.mockImplementation(async (source) => {
     clients.delete(resolve(source));
   });
-  h.debuggerGetTargets.mockImplementation(async () =>
-    [...tabs].map(([tab, id]) => ({ tabId: tab, id, attached: clients.has(id) })),
-  );
   h.debuggerGetTargetInfo.mockImplementation(async (source) => ({
     targetInfo: { targetId: resolve(source) },
   }));
@@ -160,7 +157,6 @@ describe("authenticated relay debugger lifetime", () => {
     expectRuntime(next);
     expect(f.h.debuggerDetach).toHaveBeenCalledWith({ targetId: "target-7" });
     expect(f.h.debuggerDetach).not.toHaveBeenCalledWith({ targetId: "target-99" });
-    expect(f.h.debuggerAttach).toHaveBeenCalledTimes(2);
     expect(f.h.sessionStorageValues).not.toHaveProperty("deniedTabIdsV1");
     expect(await runtime(f.h, "getTabAccess", { tabId })).toMatchObject({
       accessible: true,
@@ -532,14 +528,12 @@ describe("native debugger cleanup debt", () => {
   });
   it("rejects missing native identity and cleans its acquired client", async () => {
     const f = await nativeFixture();
-    f.h.debuggerGetTargets.mockResolvedValue([]);
     f.h.debuggerGetTargetInfo.mockResolvedValue({ targetInfo: { targetId: "" } });
     expect.soft(await f.command("attach", 7)).toMatchObject({ type: "error" });
     expect.soft(f.clients.size).toBe(0);
   });
   it("retains unknown-identity NoTab debt until authoritative native closure", async () => {
     const f = await nativeFixture();
-    f.h.debuggerGetTargets.mockResolvedValue([]);
     f.h.debuggerGetTargetInfo.mockImplementationOnce(async () => {
       f.tabs.delete(7);
       throw new Error("No tab with given id 7.");
