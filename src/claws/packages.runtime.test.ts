@@ -557,12 +557,10 @@ describe("Claw package setup and consent", () => {
         env,
         deps: {
           preflightPlugin: preflightPlugin(),
-          probePlugin: withStagedInspection(
-            vi.fn().mockResolvedValue({
-              ok: true,
+          probePlugin: withStagedInspection(async () =>
+            testPluginProbe({
               pluginId: "evidence",
               setup: { providers },
-              clawhub: { integrity },
               artifactInspection: { format: "openclaw", mapped: ["plugin"], unavailable: [] },
             }),
           ),
@@ -686,11 +684,10 @@ describe("Claw package setup and consent", () => {
 
     it("records a dependency ref without reinstalling an exact reused plugin", async () => {
       const installPlugin = vi.fn();
-      const probePluginForExtension = extensionProbe();
 
       const result = await installClawPackages(plan([{ ...consentPackage, extension }], "reuse"), {
         installPlugin,
-        probePlugin: withStagedInspection(probePluginForExtension),
+        probePlugin: withStagedInspection(extensionProbe()),
         preflightPlugin: reusePlugin(),
       });
 
