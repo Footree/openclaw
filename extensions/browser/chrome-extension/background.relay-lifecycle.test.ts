@@ -169,12 +169,10 @@ describe("authenticated relay debugger lifetime", () => {
       const f = await fixture();
       const gate = deferred(undefined);
       const detachGate = deferred(undefined);
-      const held = phase === "target lookup" ? f.h.debuggerGetTargetInfo : f.h.debuggerAttach;
-      if (phase === "target lookup") {
-        holdNext(f.h.debuggerGetTargetInfo, gate.promise);
-      } else {
-        holdNext(f.h.debuggerAttach, gate.promise);
-      }
+      const held =
+        phase === "target lookup"
+          ? holdNext(f.h.debuggerGetTargetInfo, gate.promise)
+          : holdNext(f.h.debuggerAttach, gate.promise);
       holdNext(f.h.debuggerDetach, detachGate.promise);
       send(f.old, 44, "attach");
       await waitCalled(held);
