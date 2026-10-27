@@ -96,13 +96,10 @@ suite.define(() => {
             await captureFrame(suite.artifactDir, "sidebar.png", sidebar, [owner]);
           }
           const toolbarBox = await page.locator(".sidebar-session-toolbar").boundingBox();
-          const firstRowBox = await page
-            .locator(".sidebar-sessions .sidebar-recent-session")
-            .first()
-            .boundingBox();
+          const headingBox = await page.locator(".personal-session-groups__heading").boundingBox();
           expect(toolbarBox).not.toBeNull();
-          expect(firstRowBox).not.toBeNull();
-          expect(firstRowBox!.y - toolbarBox!.y - toolbarBox!.height).toBe(4);
+          expect(headingBox).not.toBeNull();
+          expect(headingBox!.y - toolbarBox!.y - toolbarBox!.height).toBe(4);
         },
       );
     },

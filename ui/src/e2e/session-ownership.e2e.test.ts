@@ -287,7 +287,7 @@ suite.define(() => {
         };
       });
     const header = await page
-      .locator("#sidebar-session-owner-title")
+      .locator(".personal-session-groups__heading")
       .evaluate((element) => element.getBoundingClientRect().bottom);
     const [idle, unread, running] = await Promise.all([
       rowGeometry("idle"),
