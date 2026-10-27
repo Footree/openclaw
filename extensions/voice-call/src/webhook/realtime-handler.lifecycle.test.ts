@@ -289,27 +289,62 @@ describe("RealtimeCallHandler lifecycle", () => {
     expect(closeBridge).toHaveBeenCalledOnce();
   });
 
-  it("cancels a settling native consult during stream teardown", async () => {
-    const submitToolResult = vi.fn();
-    const { handler, ws, callbacks } = await openBridge(vi.fn(), {
-      supportsToolResultContinuation: true,
-      submitToolResult,
-    });
-    const consult = vi.fn<ToolHandler>(async () => ({ text: "Must not run" }));
-    handler.registerToolHandler("openclaw_agent_consult", consult);
-    callbacks.onTranscript?.("user", "Check the deployment", false);
-    invokeConsult(callbacks, "tool-consult", { question: "Check the deployment." });
-    await vi.waitFor(() => expect(submitToolResult).toHaveBeenCalledOnce());
-    expect(consult).not.toHaveBeenCalled();
-    const closed = waitForClose(ws);
-    ws.close();
-    await closed;
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 400);
-    });
-    expect(consult).not.toHaveBeenCalled();
-    expect(submitToolResult).toHaveBeenCalledOnce();
-  });
+  it.each(["settling", "running"] as const)(
+    "cancels a %s native consult during stream teardown",
+    async (phase) => {
+      let consultSignal: AbortSignal | undefined;
+      const submitToolResult = vi.fn();
+      const { handler, ws, callbacks } = await openBridge(vi.fn(), {
+        supportsToolResultContinuation: true,
+        submitToolResult,
+      });
+      const consult = vi.fn<ToolHandler>(async (_args, _callId, context) => {
+        if (phase === "settling") {
+          return { text: "Must not run" };
+        }
+        consultSignal = context.abortSignal;
+        return await new Promise<unknown>((_resolve, reject) => {
+          context.abortSignal?.addEventListener(
+            "abort",
+            () =>
+              reject(new Error("native consult aborted", { cause: context.abortSignal?.reason })),
+            { once: true },
+          );
+        });
+      });
+      handler.registerToolHandler("openclaw_agent_consult", consult);
+      if (phase === "settling") {
+        callbacks.onTranscript?.("user", "Check the deployment", false);
+      }
+      invokeConsult(callbacks, "tool-consult", { question: "Check the deployment." });
+      const consults = (
+        handler as unknown as { nativeConsultsInFlightByCallId: Map<string, unknown> }
+      ).nativeConsultsInFlightByCallId;
+      await vi.waitFor(() => {
+        expect(consults.size).toBe(1);
+        if (phase === "settling") {
+          expect(submitToolResult).toHaveBeenCalledOnce();
+          expect(consult).not.toHaveBeenCalled();
+        } else {
+          expect(consultSignal).toBeDefined();
+        }
+      });
+      const closed = waitForClose(ws);
+      ws.close();
+      await closed;
+      await vi.waitFor(() => expect(consults.size).toBe(0));
+      if (phase === "settling") {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 400);
+        });
+        expect(consult).not.toHaveBeenCalled();
+      } else {
+        expect(consultSignal?.aborted).toBe(true);
+        await nextImmediate();
+      }
+      expect(submitToolResult).toHaveBeenCalledOnce();
+    },
+  );
 
   it("preserves a concurrently admitted bridge when another creation fails", async () => {
     const firstPersistence = defer<ProcessResult>({ kind: "processed" });

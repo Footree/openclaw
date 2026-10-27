@@ -561,9 +561,17 @@ async function setup(method = "Fetch.continueRequest") {
     });
     params.requestId = owner.events(event).at(-1)?.params?.requestId;
     assert(typeof params.requestId === "string");
+    assert.notEqual(params.requestId, "native-navigation-request");
+    expect(observer.events(event)).toEqual([]);
     if (auth) {
       params.authChallengeResponse = { response: "Default" };
     }
+    const beforeForeign = harness.debuggerSendCommand.mock.calls.length;
+    expect(await observer.request(method, params, observerSession)).toMatchObject({
+      error: { message: expect.stringContaining("another session") },
+    });
+    expect(harness.debuggerSendCommand.mock.calls).toHaveLength(beforeForeign);
+    expect(target()).toBe(targetId);
   }
   return { harness, owner, observer, session, observerSession, target, method, params };
 }
@@ -576,6 +584,11 @@ async function holdNativeCompletion(rig: Awaited<ReturnType<typeof setup>>) {
     if (method !== rig.method) {
       return await native(source, method, params);
     }
+    expect(params).toEqual(
+      Object.hasOwn(rig.params, "requestId")
+        ? { ...rig.params, requestId: "native-navigation-request" }
+        : rig.params,
+    );
     started.resolve();
     await completed.promise;
     return method === "Fetch.takeResponseBodyAsStream" ? { stream: "native-body" } : {};

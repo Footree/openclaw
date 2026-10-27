@@ -57,22 +57,28 @@ async function check(
 
 async function withSqliteStore(
   maxEntries: number,
-  run: (store: MeetingParticipationOptions<object>["store"]) => Promise<void>,
+  run: (
+    store: MeetingParticipationOptions<object>["store"],
+    reopen: () => MeetingParticipationOptions<object>["store"],
+  ) => Promise<void>,
 ) {
   const { createPluginStateKeyedStore, resetPluginStateStoreForTests } =
     await import("../plugin-state/plugin-state-store.js");
   await withOpenClawTestState(
     { label: "meeting-participation", applyEnv: false },
     async (state) => {
+      const createStore = () =>
+        createPluginStateKeyedStore<MeetingParticipationAttempt>("google-meet", {
+          namespace: "meeting-participation",
+          maxEntries,
+          overflowPolicy: "reject-new",
+          env: state.env,
+        });
       try {
-        await run(
-          createPluginStateKeyedStore<MeetingParticipationAttempt>("google-meet", {
-            namespace: "meeting-participation",
-            maxEntries,
-            overflowPolicy: "reject-new",
-            env: state.env,
-          }),
-        );
+        await run(createStore(), () => {
+          resetPluginStateStoreForTests();
+          return createStore();
+        });
       } finally {
         resetPluginStateStoreForTests();
       }
@@ -224,7 +230,17 @@ describe("meeting participation authority and durable attempts", () => {
     "fences replay after losing %s",
     async (failure) => {
       const store = memoryStore();
-      const first = harness({ store });
+      const first = harness({
+        store:
+          failure === "result persistence"
+            ? {
+                ...store,
+                register: async () => {
+                  throw new Error("Storage unavailable.");
+                },
+              }
+            : store,
+      });
       if (failure === "native response") {
         first.effect.mockRejectedValue(new Error("Native response lost."));
       }

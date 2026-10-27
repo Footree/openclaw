@@ -231,19 +231,22 @@ describe("workboard sqlite batch card persistence", () => {
     );
   });
 
-  // d3d225c6b86d: metadata updates must hydrate once, regardless of the child being appended.
-  test("hydrates once when appending metadata", async () => {
+  // Counts statements by intercepting the native SQLite open boundary.
+  test.each(["worker log", "proof"])("hydrates once when adding a %s", async (operation) => {
     await using stores = openKernel();
     const store = new WorkboardStore(stores.cards, sqliteTestAuxStores(stores));
     const card = await store.create({ title: "Hydration budget" });
-    const beforeRead = sqliteStatements.reads;
-    await stores.cards.lookup(card.id);
-    const readCost = sqliteStatements.reads - beforeRead;
     const beforeWrite = sqliteStatements.reads;
-    const updated = await store.addWorkerLog(card.id, { message: "Recorded progress" });
-    expect(updated.metadata?.workerLogs?.[0]?.message).toBe("Recorded progress");
-    expect(readCost).toBeGreaterThan(0);
-    expect(sqliteStatements.reads - beforeWrite).toBe(readCost);
+    const updated =
+      operation === "worker log"
+        ? await store.addWorkerLog(card.id, { message: "Recorded progress" })
+        : await store.addProof(card.id, { status: "passed", label: "Verified result" });
+    expect(sqliteStatements.reads - beforeWrite).toBe(14);
+    expect(
+      operation === "worker log"
+        ? updated.metadata?.workerLogs?.[0]?.message
+        : updated.metadata?.proof?.[0]?.label,
+    ).toBe(operation === "worker log" ? "Recorded progress" : "Verified result");
   });
 
   // Regression for large-board stalls from per-card child reads.

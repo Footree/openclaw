@@ -164,7 +164,8 @@ describe("LINE send helpers", () => {
     });
   });
 
-  it("normalizes video actions without disabling authored Unavailable labels", async () => {
+  it("normalizes nested Flex actions without disabling authored Unavailable labels", async () => {
+    const oversizedPostback = { type: "postback", label: "Open", data: "x".repeat(301) };
     const oversizedUri = {
       type: "uri",
       label: "Open",
@@ -175,6 +176,7 @@ describe("LINE send helpers", () => {
       altText: "Raw Flex",
       contents: {
         type: "bubble",
+        action: oversizedPostback,
         hero: {
           ...structuredClone(video),
           action: oversizedUri,
@@ -182,7 +184,10 @@ describe("LINE send helpers", () => {
         body: {
           type: "box",
           layout: "vertical",
+          action: oversizedPostback,
           contents: [
+            { type: "text", text: "Open", action: oversizedUri },
+            { type: "button", action: oversizedPostback },
             {
               type: "text",
               text: "Still works",
@@ -194,17 +199,26 @@ describe("LINE send helpers", () => {
     };
     await sendBoth(message as never);
     const output = pushedMessage();
+    expect(output).not.toHaveProperty("contents.action");
     expect(output).toHaveProperty("contents.hero", video);
-    expect(output).toHaveProperty("contents.body.contents.0.action", {
+    expect(output).not.toHaveProperty("contents.body.action");
+    expect(output).not.toHaveProperty("contents.body.contents.0.action");
+    expect(output).toHaveProperty("contents.body.contents.1.action", {
+      type: "message",
+      label: "Unavailable",
+      text: "Action unavailable: callback data exceeds LINE's limit.",
+    });
+    expect(output).toHaveProperty("contents.body.contents.2.action", {
       type: "message",
       label: "Unavailable",
       text: "keep",
     });
-    expect(output).toHaveProperty("contents.body.contents.length", 2);
+    expect(output).toHaveProperty("contents.body.contents.length", 4);
     expect(output).toHaveProperty(
-      "contents.body.contents.1.text",
-      "Link unavailable: URL exceeds LINE's limit.",
+      "contents.body.contents.3.text",
+      "Action unavailable: callback data exceeds LINE's limit.\nLink unavailable: URL exceeds LINE's limit.",
     );
+    expect(message.contents.action).toBe(oversizedPostback);
     expect(message.contents.hero.action).toBe(oversizedUri);
   });
 
@@ -464,7 +478,7 @@ describe("LINE send helpers", () => {
     );
     expect(client.pushMessage).toHaveBeenCalledTimes(1);
     const payload = pushedMessage();
-    expect(payload.quickReply?.items[0]).toMatchObject({
+    expect(payload.quickReply?.items?.[0]).toMatchObject({
       action: { label, text: label },
     });
     expect(payload.quickReply?.items).toHaveLength(13);
