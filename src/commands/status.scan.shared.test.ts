@@ -61,6 +61,17 @@ function readProbeCall() {
   return mocks.probeGateway.mock.calls[0]![0];
 }
 
+function gatewayTarget(url = "ws://127.0.0.1:18789") {
+  mocks.buildGatewayConnectionDetailsWithResolvers.mockReturnValue({
+    url,
+    urlSource: "local loopback",
+    message: `Gateway target: ${url}`,
+  });
+}
+
+const unreachableProbe = (url = "ws://127.0.0.1:18789") =>
+  createUnreachableGatewayProbe(url, "timeout");
+
 vi.mock("../gateway/connection-details.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../gateway/connection-details.js")>()),
   buildGatewayConnectionDetailsWithResolvers: mocks.buildGatewayConnectionDetailsWithResolvers,
@@ -100,11 +111,7 @@ describe("resolveGatewayProbeSnapshot", () => {
     vi.clearAllMocks();
     vi.spyOn(performance, "now").mockReturnValue(0);
     mocks.waitForGatewayDiagnosticReadiness.mockReset();
-    mocks.buildGatewayConnectionDetailsWithResolvers.mockReturnValue({
-      url: "ws://127.0.0.1:18789",
-      urlSource: "local loopback",
-      message: "Gateway target: ws://127.0.0.1:18789",
-    });
+    gatewayTarget();
     mocks.resolveGatewayProbeTarget.mockReturnValue({
       mode: "local",
       gatewayMode: "local",
@@ -139,10 +146,6 @@ describe("resolveGatewayProbeSnapshot", () => {
   it("waits through a 22-second cold start before probing the selected Gateway", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
-      mocks.resolveGatewayProbeTarget.mockReturnValue({
-        gatewayMode: "local",
-        remoteUrlMissing: false,
-      });
       const startedAt = Date.now();
       mocks.waitForGatewayDiagnosticReadiness.mockImplementation(async () => {
         await new Promise((resolve) => {
@@ -152,7 +155,7 @@ describe("resolveGatewayProbeSnapshot", () => {
         return { healthy: true, elapsedMs: 22_000, waitOutcome: "healthy" };
       });
       mocks.probeGateway.mockImplementation(async () => ({
-        ...createUnreachableGatewayProbe("ws://127.0.0.1:18789", "timeout"),
+        ...unreachableProbe(),
         ok: Date.now() - startedAt >= 22_000,
       }));
       const pending = resolveGatewayProbeSnapshot();
@@ -176,10 +179,6 @@ describe("resolveGatewayProbeSnapshot", () => {
   ])(
     "preserves $waitOutcome without another probe budget",
     async ({ waitOutcome, startupPhase, error }) => {
-      mocks.resolveGatewayProbeTarget.mockReturnValue({
-        gatewayMode: "local",
-        remoteUrlMissing: false,
-      });
       mocks.resolveGatewayProbeAuthResolution.mockResolvedValue({ auth: {}, warning: undefined });
       mocks.waitForGatewayDiagnosticReadiness.mockResolvedValue({
         healthy: false,
@@ -209,7 +208,7 @@ describe("resolveGatewayProbeSnapshot", () => {
           : {}),
       });
       mocks.probeGateway.mockResolvedValue({
-        ...createUnreachableGatewayProbe("ws://127.0.0.1:18789", "timeout"),
+        ...unreachableProbe(),
         ok: observation !== "probe-failed",
       });
       const result = await resolveGatewayProbeSnapshot();
@@ -219,7 +218,7 @@ describe("resolveGatewayProbeSnapshot", () => {
 
   it("treats scope-limited read probes as reachable", async () => {
     mocks.probeGateway.mockResolvedValue({
-      ...createUnreachableGatewayProbe("ws://127.0.0.1:18789", "timeout"),
+      ...unreachableProbe(),
       connectLatencyMs: 51,
       gatewayReached: true,
       error: "missing scope: operator.read",
@@ -248,7 +247,7 @@ describe("resolveGatewayProbeSnapshot", () => {
         mocks.resolveGatewayProbeAuthResolution.mockResolvedValue({ auth: {}, warning: undefined });
       }
       mocks.probeGateway.mockResolvedValue({
-        ...createUnreachableGatewayProbe("ws://127.0.0.1:18789", "timeout"),
+        ...unreachableProbe(),
         ...(!explicit
           ? {
               auth: {
@@ -280,14 +279,8 @@ describe("resolveGatewayProbeSnapshot", () => {
   );
 
   it("does not use the local status RPC fallback for dotted localhost", async () => {
-    mocks.buildGatewayConnectionDetailsWithResolvers.mockReturnValue({
-      url: "ws://localhost.:18789",
-      urlSource: "local loopback",
-      message: "Gateway target: ws://localhost.:18789",
-    });
-    mocks.probeGateway.mockResolvedValue(
-      createUnreachableGatewayProbe("ws://localhost.:18789", "timeout"),
-    );
+    gatewayTarget("ws://localhost.:18789");
+    mocks.probeGateway.mockResolvedValue(unreachableProbe("ws://localhost.:18789"));
 
     const result = await resolveGatewayProbeSnapshot();
 
@@ -336,14 +329,10 @@ describe("resolveGatewayProbeSnapshot", () => {
       });
     });
 
-    mocks.buildGatewayConnectionDetailsWithResolvers.mockReturnValue({
-      url,
-      urlSource: "local loopback",
-      message: `Gateway target: ${url}`,
-    });
+    gatewayTarget(url);
     mocks.probeGateway.mockImplementation(async () => {
       vi.spyOn(performance, "now").mockReturnValue(150);
-      return createUnreachableGatewayProbe(url, "timeout");
+      return unreachableProbe(url);
     });
     mocks.callGateway.mockImplementation(async (...args: unknown[]) => {
       const { callGateway } =
@@ -413,9 +402,7 @@ describe("resolveGatewayProbeSnapshot", () => {
       gatewayMode: "remote",
       remoteUrlMissing: false,
     });
-    mocks.probeGateway.mockResolvedValue(
-      createUnreachableGatewayProbe("wss://gateway.example/ws", "timeout"),
-    );
+    mocks.probeGateway.mockResolvedValue(unreachableProbe("wss://gateway.example/ws"));
 
     const result = await resolveGatewayProbeSnapshot({
       gateway: { mode: "remote", remote: { url: "wss://gateway.example/ws" } },
@@ -438,13 +425,13 @@ describe("buildTailscaleHttpsUrl", () => {
   });
 });
 
-function memoryManager<
-  T extends import("../memory-host-sdk/engine-storage.js").MemoryProviderStatus,
->(status: T) {
+function memoryManager(
+  status: Omit<import("../memory-host-sdk/engine-storage.js").MemoryProviderStatus, "backend">,
+) {
   return {
     probeVectorStoreAvailability: vi.fn(async () => true),
     probeVectorAvailability: vi.fn(async () => true),
-    status: vi.fn(() => status),
+    status: vi.fn(() => ({ backend: "builtin" as const, files: 0, chunks: 0, ...status })),
     close: vi.fn(async () => {}),
   };
 }
@@ -534,10 +521,7 @@ describe("resolveSharedMemoryStatusSnapshot", () => {
       agents: { entries: { main: { memory: { search: { provider: "local" as const } } } } },
     };
     const manager = memoryManager({
-      backend: "builtin" as const,
       provider: "local",
-      files: 0,
-      chunks: 0,
       dirty: true,
     });
     const resolveMemoryConfig = vi.fn(() => ({
@@ -561,12 +545,9 @@ describe("resolveSharedMemoryStatusSnapshot", () => {
 
   it("asks custom memory-slot runtimes for status without requiring built-in memorySearch", async () => {
     const manager = memoryManager({
-      backend: "builtin" as const,
       provider: "memory-lancedb-pro",
       files: 66,
       chunks: 128,
-      vector: { enabled: true, available: true },
-      fts: { enabled: true, available: true },
     });
     const resolveMemoryConfig = vi.fn(() => null);
     getMemorySearchManager.mockResolvedValue({ manager });
@@ -576,9 +557,7 @@ describe("resolveSharedMemoryStatusSnapshot", () => {
 
     const result = await memorySnapshot({
       cfg: {
-        plugins: {
-          slots: { memory: "memory-lancedb-pro" },
-        },
+        plugins: { slots: { memory: "memory-lancedb-pro" } },
         memory: { search: { enabled: false } },
       },
       memoryPlugin: { enabled: true, slot: "memory-lancedb-pro" },
@@ -619,12 +598,8 @@ describe("resolveSharedMemoryStatusSnapshot", () => {
     db.exec("CREATE TABLE files (path TEXT PRIMARY KEY); INSERT INTO files VALUES ('MEMORY.md')");
     db.close();
     const manager = memoryManager({
-      backend: "builtin" as const,
       provider: "openai",
       files: 1,
-      chunks: 0,
-      vector: { enabled: true, available: true },
-      fts: { enabled: true, available: true },
     });
     getMemorySearchManager.mockResolvedValue({ manager });
 
