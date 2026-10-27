@@ -322,6 +322,11 @@ suite.define(() => {
                 Date.now(),
               ),
             });
+            // Fixture delivery does not wait for the new row's presentation.
+            await expect(
+              transcript.getByText("Riley joined this conversation."),
+              label,
+            ).toBeVisible();
             if (profiled) {
               const peer = pane.locator(".chat-group--peer", {
                 hasText: "Riley joined this conversation.",
@@ -333,10 +338,7 @@ suite.define(() => {
             if (height === 430) {
               // The first message can leave the virtual window after new turns.
               // Return to it before checking its attributed identity.
-              await waitForChatScrollIdle(page);
               await scrollChatThreadToTop(page);
-              await thread.focus();
-              // Let the top-arrival scroll settle before native End.
               await waitForChatScrollIdle(page);
               expect(await thread.evaluate((element) => element.scrollTop), label).toBe(0);
             }
