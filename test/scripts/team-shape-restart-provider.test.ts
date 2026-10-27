@@ -38,7 +38,9 @@ it("rejects unsupported provider targets and pins the Responses upstream", async
     expect(upstream.mock.calls[0]?.[0]).toBe("https://api.openai.com/v1/responses");
     const body = upstream.mock.calls[0]?.[1]?.body;
     expect(typeof body).toBe("string");
-    if (typeof body !== "string") throw new Error("Expected a JSON request body");
+    if (typeof body !== "string") {
+      throw new Error("Expected a JSON request body");
+    }
     expect(JSON.parse(body)).toMatchObject({
       model: "approved-stress-model",
     });

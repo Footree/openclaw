@@ -451,7 +451,9 @@ export async function runRestartStress(argv: string[]) {
           signal: abort.signal,
           timeoutMs: 120_000,
         });
-        if (code !== 0) throw new Error(`Managed restart intent refused (exit ${code})`);
+        if (code !== 0) {
+          throw new Error(`Managed restart intent refused (exit ${code})`);
+        }
       }
       record.at = Date.now();
       child.kill(kind === "sigkill" ? "SIGKILL" : "SIGTERM");
