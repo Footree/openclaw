@@ -598,6 +598,45 @@ describe("typed Git read ownership", () => {
     expect(gitRead).toHaveBeenCalledTimes(5);
   });
 
+  it("prepares only Git environment values once per poll while observing changes", async () => {
+    vi.useFakeTimers();
+    gitRead.mockResolvedValue(emptyDiff);
+    const environment = process.env;
+    const reads: string[] = [];
+    const values = {
+      ...environment,
+      GIT_CONFIG_GLOBAL: "/first",
+      UNRELATED_DIFF_FIXTURE: "unused",
+    };
+    process.env = new Proxy(values, {
+      get(target, property, receiver) {
+        if (property === "GIT_CONFIG_GLOBAL" || property === "UNRELATED_DIFF_FIXTURE") {
+          reads.push(property);
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    try {
+      const poll = () =>
+        runGitReadOperation(
+          { type: "checkout.diff", input: { cwd: "/poll-environment" } },
+          { poll: true },
+        );
+      await poll();
+      await vi.advanceTimersByTimeAsync(1_001);
+      reads.length = 0;
+      await poll();
+      expect(gitRead).toHaveBeenCalledOnce();
+      expect(reads).toEqual(["GIT_CONFIG_GLOBAL"]);
+      values.GIT_CONFIG_GLOBAL = "/second";
+      await poll();
+      expect(gitRead).toHaveBeenCalledTimes(2);
+      expect(reads).not.toContain("UNRELATED_DIFF_FIXTURE");
+    } finally {
+      process.env = environment;
+    }
+  });
+
   it("separates unavailable checkouts by environment and honors explicit refresh", async () => {
     vi.useFakeTimers();
     const operation = { type: "checkout.diff" as const, input: { cwd: "/negative-scope" } };
