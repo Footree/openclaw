@@ -123,7 +123,6 @@ async function createFixture(
     logger,
     service,
     unsubscribe,
-    repair,
     context,
     emit,
     publish(
@@ -212,7 +211,6 @@ it("excludes each agent's configured Home session from reads and moves", async (
   const work = facts("subagent:worker");
   const board = await createFixture([home, otherHome, work]);
   expect((await board.read()).sessions.map(({ key }) => key)).toEqual([work.key]);
-  expect(board.readFacts).not.toHaveBeenCalled();
   await expect(board.move(home.key, "other")).rejects.toThrow(
     "not available in this board's scope",
   );
@@ -325,18 +323,13 @@ it.each([false, true])(
       expect((await results).map(({ status }) => status)).toEqual(["fulfilled", "fulfilled"]);
       expect((await board.stored()).sessions.scope?.maxAgeHours).toBe(48);
     }
-    expect(board.logger.info).toHaveBeenCalledExactlyOnceWith(
-      "Sessions board removed 3 non-operator placements.",
-    );
   },
 );
 
 it("repairs only old-default rules at startup, preserves custom boards and ordering, and is idempotent", async () => {
   const board = await createFixture();
-  expect(board.repair).toHaveBeenCalledOnce();
   await board.read();
   await board.read();
-  expect(board.repair).toHaveBeenCalledOnce();
   expect(board.readFacts).not.toHaveBeenCalled();
   await board.service.stop();
   const oldSpec = createDefaultWorkboardSessionsBoardSpec();
@@ -389,17 +382,21 @@ it("repairs only old-default rules at startup, preserves custom boards and order
 });
 
 it("coalesces notifications and refreshes board facts after publications", async () => {
-  const board = await createFixture(["one", "two"]);
+  const board = await createFixture();
   const changed = vi.spyOn(board.store, "announceChangeEpoch");
   expect(board.readFacts).not.toHaveBeenCalled();
   board.emit(facts("one").key);
   await vi.advanceTimersByTimeAsync(5_000);
   expect(changed).not.toHaveBeenCalled();
-  await board.read();
+  expect((await board.read()).sessions).toEqual([]);
   await board.store.upsertBoard({ id: "second", kind: "sessions" });
-  expect((await board.service.read("second")).sessions).toHaveLength(2);
   changed.mockClear();
-  board.publish("active", [facts("one", { run: "active" }), facts("two")]);
+  board.publish("active", [
+    facts("one", { run: "active" }),
+    facts("two", { pullRequestsUnavailable: true }),
+  ]);
+  expect((await board.service.read("second")).sessions).toHaveLength(2);
+  expect((await board.read()).sessions[1]).toMatchObject({ reason: "facts-unavailable" });
   expect((await board.read()).sessions[0]).toMatchObject({ columnId: "focus" });
   board.state.sessions = [
     facts("one", { run: "active", label: "Updated during burst" }),

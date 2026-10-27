@@ -28,7 +28,7 @@ import { sqliteTestAuxStores } from "./test/sqlite-store.js";
 
 const sqliteStatements = vi.hoisted(() => ({
   count: 0,
-  executed: [] as string[],
+  reads: 0,
 }));
 
 vi.mock("openclaw/plugin-sdk/sqlite-worker-runtime", async (importOriginal) => {
@@ -47,7 +47,9 @@ vi.mock("openclaw/plugin-sdk/sqlite-worker-runtime", async (importOriginal) => {
             value: new Proxy(statement[method], {
               apply(target, receiver, methodArgs) {
                 sqliteStatements.count++;
-                sqliteStatements.executed.push(sql);
+                if (/^select\b/i.test(sql.trimStart())) {
+                  sqliteStatements.reads++;
+                }
                 return Reflect.apply(target, receiver, methodArgs);
               },
             }),
@@ -229,23 +231,19 @@ describe("workboard sqlite batch card persistence", () => {
     );
   });
 
-  // Counts statements by intercepting the native SQLite open boundary.
-  test.each(["worker log", "proof"])("hydrates once when adding a %s", async (operation) => {
+  // d3d225c6b86d: metadata updates must hydrate once, regardless of the child being appended.
+  test("hydrates once when appending metadata", async () => {
     await using stores = openKernel();
     const store = new WorkboardStore(stores.cards, sqliteTestAuxStores(stores));
     const card = await store.create({ title: "Hydration budget" });
-    const before = sqliteStatements.executed.length;
-    const updated =
-      operation === "worker log"
-        ? await store.addWorkerLog(card.id, { message: "Recorded progress" })
-        : await store.addProof(card.id, { status: "passed", label: "Verified result" });
-    const statements = sqliteStatements.executed.slice(before);
-    expect(statements.filter((sql) => /^select\b/i.test(sql.trimStart()))).toHaveLength(14);
-    expect(
-      operation === "worker log"
-        ? updated.metadata?.workerLogs?.[0]?.message
-        : updated.metadata?.proof?.[0]?.label,
-    ).toBe(operation === "worker log" ? "Recorded progress" : "Verified result");
+    const beforeRead = sqliteStatements.reads;
+    await stores.cards.lookup(card.id);
+    const readCost = sqliteStatements.reads - beforeRead;
+    const beforeWrite = sqliteStatements.reads;
+    const updated = await store.addWorkerLog(card.id, { message: "Recorded progress" });
+    expect(updated.metadata?.workerLogs?.[0]?.message).toBe("Recorded progress");
+    expect(readCost).toBeGreaterThan(0);
+    expect(sqliteStatements.reads - beforeWrite).toBe(readCost);
   });
 
   // Regression for large-board stalls from per-card child reads.

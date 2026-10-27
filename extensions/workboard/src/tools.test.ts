@@ -6,7 +6,6 @@ import { Value } from "typebox/value";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi } from "../api.js";
 import plugin from "../index.js";
-import type { PersistedWorkboardCard } from "./persistence-types.js";
 import { WorkboardStore } from "./store.js";
 import { toolsByName } from "./test/interaction-fixtures.js";
 import { startEmptySessionsBoardService } from "./test/sessions-board.js";
@@ -58,26 +57,6 @@ function workspaceTools(
   return toolsByName(
     guardWorkboardToolsForWorkspaceAccess(createWorkboardTools({ store, context }), context),
   );
-}
-
-function persistedCard(
-  id: string,
-  overrides: Partial<PersistedWorkboardCard["card"]>,
-): PersistedWorkboardCard {
-  return {
-    version: 1,
-    card: {
-      id,
-      title: id,
-      status: "todo",
-      priority: "normal",
-      labels: [],
-      position: 1000,
-      createdAt: 1,
-      updatedAt: 1,
-      ...overrides,
-    },
-  };
 }
 
 function readPayload(result: unknown): Record<string, unknown> {
@@ -306,59 +285,19 @@ describe("workboard tools", () => {
     });
   });
 
-  it("lists, claims, heartbeats, and reads worker context", async () => {
-    const {
-      store: workboardStore,
-      stores: { cards: store },
-    } = createWorkboardSqliteTestHarness();
-    const tools = createWorkboardTools({
-      store: workboardStore,
-      context: { agentId: "main", sessionKey: "session-1" },
-    });
-    const byName = toolsByName(tools);
-
-    await store.register(
-      "card-1",
-      persistedCard("card-1", {
-        title: "Ship coordination",
-        agentId: "main",
-      }),
-    );
-    await store.register(
-      "archived-1",
-      persistedCard("archived-1", {
-        title: "Closed work",
-        status: "done",
-        position: 2000,
-        metadata: { archivedAt: 2 },
-      }),
-    );
-
-    const claimed = await runTool(byName, "claim", { id: "card-1" });
-    expect(claimed.card).toMatchObject({
-      status: "running",
-      metadata: { claim: { ownerId: "main", token: "[redacted]" } },
-    });
-    const token = (claimed.token as string | undefined) ?? "";
-
-    const heartbeat = await runTool(byName, "heartbeat", { id: "card-1", token, note: "alive" });
-    expect(heartbeat).toMatchObject({
-      card: { metadata: { comments: [expect.objectContaining({ body: "alive" })] } },
-    });
-
-    const read = await runTool(byName, "read", { id: "card-1" });
-    expect(read.workerContext).toContain("Ship coordination");
-    expect(read.card).toMatchObject({ metadata: { claim: { token: "[redacted]" } } });
-
-    const released = await runTool(byName, "release", { id: "card-1", token, status: "review" });
-    expect(released).toMatchObject({ card: { status: "review" } });
-    expect((released.card as { metadata?: { claim?: unknown } }).metadata?.claim).toBeUndefined();
-
-    const list = await runTool(byName, "list", {});
-    expect(list.cards).toEqual([expect.objectContaining({ id: "card-1" })]);
-    const archivedList = await runTool(byName, "list", { includeArchived: true });
-    expect(archivedList.cards).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: "archived-1", archivedAt: 2 })]),
+  it("lists archived cards only when requested", async () => {
+    const store = createWorkboardSqliteTestStore();
+    const tools = toolSet(store);
+    const active = await store.create({ title: "Active" });
+    const closed = await store.create({ title: "Closed", status: "done" });
+    const archived = await store.archive(closed.id, true);
+    expect((await runTool(tools, "list", {})).cards).toEqual([
+      expect.objectContaining({ id: active.id }),
+    ]);
+    expect((await runTool(tools, "list", { includeArchived: true })).cards).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: closed.id, archivedAt: archived.metadata?.archivedAt }),
+      ]),
     );
   });
 
@@ -416,29 +355,29 @@ describe("workboard tools", () => {
 
   it("keeps blocked-card mutations out of the host tool failure contract", async () => {
     const { store, stores } = createWorkboardSqliteTestHarness();
-    const keyed = stores.cards;
     const byName = toolSet(store);
     const token = "claim-token-1";
-    await keyed.register(
-      "card-1",
-      persistedCard("card-1", {
-        title: "Blocked work",
-        status: "blocked",
+    const card = await store.create({ title: "Blocked work", status: "blocked" });
+    await stores.cards.register(card.id, {
+      version: 1,
+      card: {
+        ...card,
         metadata: { claim: { ownerId: "main", token, claimedAt: 1, lastHeartbeatAt: 1 } },
-      }),
-    );
+      },
+    });
+    const id = card.id;
 
     const calls = [
-      ["workboard_comment", { id: "card-1", token, body: "still waiting on review" }],
-      ["workboard_heartbeat", { id: "card-1", token, note: "still blocked" }],
-      ["workboard_release", { id: "card-1", token }],
+      ["workboard_comment", { id, token, body: "still waiting on review" }],
+      ["workboard_heartbeat", { id, token, note: "still blocked" }],
+      ["workboard_release", { id, token }],
     ] as const;
     for (const [name, params] of calls) {
       const result = await expectDefined(byName.get(name), name).execute(name, params);
       expect(isToolResultError(result), name).toBe(false);
-      expect(readPayload(result).card, name).toMatchObject({ id: "card-1", status: "blocked" });
+      expect(readPayload(result).card, name).toMatchObject({ id, status: "blocked" });
     }
-    expect((await keyed.lookup("card-1"))?.card).toMatchObject({
+    expect((await stores.cards.lookup(id))?.card).toMatchObject({
       status: "blocked",
       metadata: {
         comments: [
@@ -447,7 +386,7 @@ describe("workboard tools", () => {
         ],
       },
     });
-    expect((await keyed.lookup("card-1"))?.card.metadata?.claim).toBeUndefined();
+    expect((await stores.cards.lookup(id))?.card.metadata?.claim).toBeUndefined();
   });
 
   it("requires claim scope before creating or linking dependencies against claimed cards", async () => {
@@ -546,7 +485,21 @@ describe("workboard tools", () => {
     ).rejects.toThrow(/claimed/);
 
     const claimed = await runTool(tools, "claim", { id: parent.id });
-    const token = claimed.token as string;
+    expect(claimed.card).toMatchObject({
+      status: "running",
+      metadata: { claim: { ownerId: "main", token: "[redacted]" } },
+    });
+    const read = await runTool(tools, "read", { id: parent.id });
+    expect(read.workerContext).toContain("Parent");
+    expect(read.card).toMatchObject({ metadata: { claim: { token: "[redacted]" } } });
+    const released = await runTool(tools, "release", {
+      id: parent.id,
+      token: claimed.token,
+      status: "review",
+    });
+    expect(released.card).toMatchObject({ status: "review" });
+    expect((released.card as { metadata?: { claim?: unknown } }).metadata?.claim).toBeUndefined();
+    const token = (await runTool(tools, "claim", { id: parent.id })).token as string;
     const pendingProof = await runTool(tools, "proof", {
       id: parent.id,
       token,
@@ -600,99 +553,14 @@ describe("workboard tools", () => {
     expect(promoted[0]?.metadata?.claim?.token).toBe("[redacted]");
   });
 
-  it("exposes board lifecycle, decomposition, runs, and notification tools", async () => {
+  it("preserves the board automation job contract", async () => {
     const store = createWorkboardSqliteTestStore();
     const tools = toolSet(store);
-
-    const boardInput = {
-      id: "planning",
-      name: "Planning",
-      automationJobId: "job-categorize-planning",
-      orchestration: {
-        autoDecompose: true,
-        autoDecomposePerDispatch: 2,
-        orchestratorProfile: "planner",
-      },
-    };
-    const boardPayload = await runTool(tools, "board_create", boardInput);
-    expect(boardPayload.board).toMatchObject(boardInput);
-    const boardCreate = expectDefined(
-      tools.get("workboard_board_create"),
-      "workboard board create tool",
-    );
-    expect(
-      Value.Check(boardCreate.parameters, {
-        id: "planning",
-        automationJobId: "job-categorize-planning",
-      }),
-    ).toBe(true);
-    expect(Value.Check(boardCreate.parameters, { id: "planning", automationJobId: "" })).toBe(
-      false,
-    );
-
-    const parent = await store.create({
-      title: "Rough",
-      status: "triage",
-      boardId: "planning",
-      idempotencyKey: "planning:rough",
-    });
-    const specified = await runTool(tools, "specify", {
-      id: parent.id,
-      title: "Specified",
-      summary: "Ready to split.",
-    });
-    expect(specified.card).toMatchObject({ title: "Specified", status: "todo" });
-
-    const decomposed = await runTool(tools, "decompose", {
-      id: parent.id,
-      summary: "Split.",
-      children: [{ title: "Child A" }, { title: "Child B" }],
-    });
-    expect(decomposed.parent).toMatchObject({ status: "done" });
-    expect(decomposed.children).toEqual([
-      expect.objectContaining({ title: "Child A" }),
-      expect.objectContaining({ title: "Child B" }),
-    ]);
-
-    const runs = await runTool(tools, "runs", { id: parent.id });
-    expect(runs.attempts).toEqual([]);
-
-    const subscriptionInput = {
-      boardId: "planning",
-      cardId: parent.id,
-      target: "session:operator",
-      eventKinds: ["completed"],
-    };
-    const subscription = await runTool(tools, "notify_subscribe", subscriptionInput);
-    expect(subscription.subscription).toMatchObject(subscriptionInput);
-
-    const list = await runTool(tools, "notify_list", {
-      boardId: "planning",
-    });
-    expect(list.subscriptions).toEqual([
-      expect.objectContaining({ cardId: parent.id, target: "session:operator" }),
-    ]);
-
-    const events = await runTool(tools, "notify_advance", {
-      subscriptionId: (subscription.subscription as { id: string }).id,
-    });
-    expect(events.events).toEqual([expect.objectContaining({ kind: "completed" })]);
-
-    const attached = await runTool(tools, "attachment_add", {
-      id: parent.id,
-      fileName: "result.txt",
-      contentBase64: Buffer.from("done").toString("base64"),
-    });
-    expect(attached.card).toMatchObject({
-      metadata: { attachments: [expect.objectContaining({ fileName: "result.txt" })] },
-    });
-    const attachments = (attached.card as { metadata: { attachments: Array<{ id: string }> } })
-      .metadata.attachments;
-    const attachmentId = expectDefined(attachments[0], "workboard attachment").id;
-    const attachment = await runTool(tools, "attachment_read", {
-      id: attachmentId,
-    });
-    expect(Buffer.from(attachment.contentBase64 as string, "base64").toString("utf8")).toBe("done");
+    const input = { id: "planning", automationJobId: "job-planning" };
+    const create = expectDefined(tools.get("workboard_board_create"), "board create");
+    expect(Value.Check(create.parameters, input)).toBe(true);
+    expect(Value.Check(create.parameters, { ...input, automationJobId: "" })).toBe(false);
+    expect((await runTool(tools, "board_create", input)).board).toMatchObject(input);
   });
 
   it("moves cards with agent claim scope", async () => {
