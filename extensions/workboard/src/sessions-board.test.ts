@@ -283,20 +283,6 @@ it("classifies custom conjunctions, alternatives, and unknown PR state", async (
   );
 });
 
-it("classifies default rule priority for unobserved runs and PRs", async () => {
-  const read = await expectClassification(createDefaultWorkboardSessionsBoardSpec(), [
-    ["active", { run: "active" }, "working"],
-    ["failed", { run: "failed" }, "stuck"],
-    ["unhealthy-active", { run: "active", observerDigest: observed("stuck") }, "stuck"],
-    ["needs-input", { run: "active", observerDigest: observed("waiting-on-user") }, "needs-input"],
-    ["review", { pullRequests: pr(1) }, "in-review"],
-    ["merged", { pullRequests: pr(2, "merged") }, "merged"],
-    ["idle", {}, "done"],
-  ]);
-  expect(read.columns.map((column) => column.id)).toEqual(DEFAULT_COLUMNS);
-  expect(read.warning).toBeUndefined();
-});
-
 it.each([false, true])(
   "waits for placement repair on first use and drains it on stop (stop early: %s)",
   async (stopEarly) => {
@@ -423,7 +409,7 @@ it("coalesces notifications and refreshes board facts after publications", async
 });
 
 it.each([false, true])(
-  "classifies confirmed stale PR facts and reports unavailable facts (rate limited: %s)",
+  "prioritizes default rules over PR facts and reports availability (rate limited: %s)",
   async (rateLimited) => {
     const availability = rateLimited
       ? { pullRequestsRateLimited: true as const }
@@ -439,6 +425,8 @@ it.each([false, true])(
       },
       { ...facts("none", availability), pullRequestsStale: true as const },
       facts("unknown", availability),
+      facts("failed", { run: "failed" }),
+      facts("unhealthy-active", { run: "active", observerDigest: observed("stuck") }),
     ];
     const board = await createFixture(rows, { spec: createDefaultWorkboardSessionsBoardSpec() });
     const read = await board.read();
@@ -447,6 +435,8 @@ it.each([false, true])(
       { columnId: "merged" },
       { columnId: "done", reason: "fallback" },
       { columnId: "done", reason: "facts-unavailable" },
+      { columnId: "stuck" },
+      { columnId: "stuck" },
     ]);
     const suffix = rateLimited ? " (GitHub rate limited)" : "";
     expect(read.warning).toBe(

@@ -189,67 +189,43 @@ describe("workboard tools", () => {
     }
   });
 
-  it("inherits the active tool filesystem boundary for workspace metadata", async () => {
-    const store = createWorkboardSqliteTestStore();
-    const restrictedContext = {
-      agentId: "main",
-      workspaceDir: "/workspace",
-      fsPolicy: { workspaceOnly: true },
-    } as const;
-    const restricted = workspaceTools(store, restrictedContext);
-
-    await expect(
-      executeTool(restricted, "create", {
-        title: "Outside",
-        workspace: { kind: "worktree", path: "/outside/repo" },
-      }),
-    ).rejects.toThrow(/outside the caller/);
-    await expect(
-      executeTool(restricted, "create", {
-        title: "Inside",
-        workspace: { kind: "worktree", path: "/workspace/repo" },
-        workspaceAccess: { unrestricted: true },
-      }),
-    ).resolves.toBeDefined();
-
-    const unrestrictedContext = {
-      agentId: "main",
-      workspaceDir: "/workspace",
-      fsPolicy: { workspaceOnly: false },
-    } as const;
-    const unrestricted = workspaceTools(store, unrestrictedContext);
-    await expect(
-      executeTool(unrestricted, "create", {
-        title: "Unrestricted",
-        workspace: { kind: "worktree", path: "/outside/repo" },
-      }),
-    ).resolves.toBeDefined();
-
-    expect((await store.list()).find((card) => card.title === "Inside")).toMatchObject({
-      metadata: {
-        automation: {
-          workspaceAccess: { unrestricted: false, roots: ["/workspace"], writable: true },
-        },
-      },
-    });
-    expect((await store.list()).find((card) => card.title === "Unrestricted")).toMatchObject({
-      metadata: { automation: { workspaceAccess: { unrestricted: true } } },
-    });
-
-    const sandboxContext = {
-      agentId: "main",
-      workspaceDir: "/workspace",
-      fsPolicy: { workspaceOnly: false },
-      sandboxed: true,
-    } as const;
-    const sandboxed = workspaceTools(store, sandboxContext);
-    await expect(
-      executeTool(sandboxed, "create", {
-        title: "Sandbox outside",
-        workspace: { kind: "worktree", path: "/outside/repo" },
-      }),
-    ).rejects.toThrow(/outside the caller/);
-  });
+  it.each([
+    ["workspace-only", true, false],
+    ["unrestricted", false, false],
+    ["sandboxed", false, true],
+  ] as const)(
+    "inherits %s filesystem authority for workspace metadata",
+    async (_name, workspaceOnly, sandboxed) => {
+      const store = createWorkboardSqliteTestStore();
+      const confined = workspaceOnly || sandboxed;
+      const tools = workspaceTools(store, {
+        agentId: "main",
+        workspaceDir: "/workspace",
+        fsPolicy: { workspaceOnly },
+        sandboxed,
+      });
+      if (confined) {
+        await expect(
+          executeTool(tools, "create", {
+            title: "Outside",
+            workspace: { kind: "worktree", path: "/outside/repo" },
+          }),
+        ).rejects.toThrow(/outside the caller/);
+      }
+      await expect(
+        executeTool(tools, "create", {
+          title: "Allowed",
+          workspace: { kind: "worktree", path: confined ? "/workspace/repo" : "/outside/repo" },
+          workspaceAccess: { unrestricted: true },
+        }),
+      ).resolves.toBeDefined();
+      expect((await store.list())[0]?.metadata?.automation?.workspaceAccess).toMatchObject(
+        confined
+          ? { unrestricted: false, roots: ["/workspace"], writable: true }
+          : { unrestricted: true },
+      );
+    },
+  );
 
   it("preserves read-only sandbox authority while allowing manual card movement", async () => {
     const store = createWorkboardSqliteTestStore();
@@ -638,38 +614,29 @@ async function expectRunFinished(
 }
 
 describe("workboard terminal status writes", () => {
-  it.each(["done", "blocked"] as const)(
-    "releases the claim and finishes the run when workboard_move targets %s",
-    async (status) => {
-      const store = createWorkboardSqliteTestStore();
-      const tools = toolSet(store, "agent-a");
-      const { card, token } = await createDispatchedCard(store);
-
-      const moved = await runTool(tools, "move", { id: card.id, status, token });
-
-      expect(moved.card).toMatchObject({ status });
-      await expectRunFinished(store, card.id, status);
-    },
-  );
-
-  it("releases the claim when update writes done", async () => {
-    const store = createWorkboardSqliteTestStore();
-    const { card } = await createDispatchedCard(store);
-
-    await store.update(card.id, { status: "done" });
-
-    await expectRunFinished(store, card.id, "done");
-  });
-
-  it("counts block() once, including later blocked writes", async () => {
+  it.each([
+    ["move", "done"],
+    ["move", "blocked"],
+    ["update", "done"],
+    ["block", "blocked"],
+  ] as const)("settles the run when %s writes %s", async (action, status) => {
     const store = createWorkboardSqliteTestStore();
     const { card, token } = await createDispatchedCard(store);
-
-    await store.block(card.id, { ownerId: "agent-a", token, reason: "Workboard card blocked." });
-    await store.move(card.id, "blocked", undefined);
-    await store.update(card.id, { status: "blocked" });
-
-    await expectRunFinished(store, card.id, "blocked");
+    if (action === "move") {
+      const moved = await runTool(toolSet(store, "agent-a"), "move", {
+        id: card.id,
+        status,
+        token,
+      });
+      expect(moved.card).toMatchObject({ status });
+    } else if (action === "update") {
+      await store.update(card.id, { status });
+    } else {
+      await store.block(card.id, { ownerId: "agent-a", token, reason: "Workboard card blocked." });
+      await store.move(card.id, "blocked", undefined);
+      await store.update(card.id, { status: "blocked" });
+    }
+    await expectRunFinished(store, card.id, status);
   });
 
   it.each(["done", "blocked"] as const)(
