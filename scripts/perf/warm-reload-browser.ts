@@ -169,6 +169,12 @@ export async function calibrateWarmReloadPaintHolding(
         const frames: Array<{ file: string; epochMs: number; kind: string }> = [],
           writes: Promise<void>[] = [];
         let captureError: Error | undefined;
+        // The callback can fail during either awaited surface boundary.
+        const checkCaptureError = () => {
+          if (captureError) {
+            throw captureError;
+          }
+        };
         const oldSurface = Promise.withResolvers<void>();
         const newSurface = Promise.withResolvers<void>();
         cdp.on("Page.screencastFrame", (event) => {
@@ -207,17 +213,13 @@ export async function calibrateWarmReloadPaintHolding(
           everyNthFrame: 1,
         });
         await bounded(oldSurface.promise);
-        if (captureError) {
-          throw captureError;
-        }
+        checkCaptureError();
         await page.goto(`http://127.0.0.1:${options.port}/new?delay=${delay}`, {
           waitUntil: "domcontentloaded",
           timeout: 4000,
         });
         await bounded(newSurface.promise);
-        if (captureError) {
-          throw captureError;
-        }
+        checkCaptureError();
         const milestones = await page.evaluate(() => ({
           origin: performance.timeOrigin,
           domMs: Number(document.body.dataset.domMs),
