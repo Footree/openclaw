@@ -280,7 +280,6 @@ function assertPreparedAgentHarnessExecutionEnvironment(
         | "execNode"
         | "execCwd"
         | "nativeRuntimeConsent"
-        | "spawnedBySenderIsOwner"
       >
     | undefined,
   nativeSource: boolean,
@@ -288,8 +287,8 @@ function assertPreparedAgentHarnessExecutionEnvironment(
 ): boolean {
   const remembered = hasRememberedNativeRuntimeConsent(params.config, agentId, harness.id);
   // Per-chat consent belongs to this incarnation; agent consent authorizes the selected harness.
-  // A subagent continues the owner turn that spawned it.
-  const owner = params.senderIsOwner === true || entry?.spawnedBySenderIsOwner === true;
+  // Only a live owner sender counts; a stored spawn receipt is not current authority.
+  const owner = params.senderIsOwner === true;
   const modes = entry && withOwnerNativeConsentModes(entry, owner, runtime.sandboxed);
   const nativeRuntimeConsent =
     entry?.sessionId === params.sessionId &&

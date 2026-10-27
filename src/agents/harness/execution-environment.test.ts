@@ -128,7 +128,8 @@ it.each([true, false])(
 it.each([
   ["an owner chat with unset modes", {}, true, true],
   ["a guest chat with unset modes", {}, false, false],
-  ["an owner-spawned subagent", { spawnedBySenderIsOwner: true }, false, true],
+  // A stored spawn receipt is not current owner authority.
+  ["a subagent with only an owner spawn receipt", { spawnedBySenderIsOwner: true }, false, false],
   ["an explicit Full Access chat", { permissionMode: "full", sandboxMode: "off" }, false, true],
   ["an owner chat with explicit workspace mode", { permissionMode: "workspace" }, true, "refused"],
 ] as const)("applies remembered agent consent to %s", async (_name, entry, owner, expected) => {
