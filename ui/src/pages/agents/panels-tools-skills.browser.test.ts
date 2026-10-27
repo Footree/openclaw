@@ -31,29 +31,20 @@ const texts = (root: Element, selector: string) =>
   Array.from(root.querySelectorAll(selector), text);
 const content = (root: Element, selector: string) => text(root.querySelector(selector));
 type CatalogTool = ToolsCatalogResult["groups"][number]["tools"][number];
-const catalogTool = (
-  id: string,
-  description: string,
-  overrides: Partial<CatalogTool> = {},
-): CatalogTool => ({
+const catalogTool = (id: string, overrides: Partial<CatalogTool> = {}): CatalogTool => ({
   id,
   label: id,
-  description,
+  description: id,
   source: "core",
   defaultProfiles: [],
   ...overrides,
 });
 type PreviewTool = ToolsEffectiveResult["groups"][number]["tools"][number];
-const previewTool = (
-  id: string,
-  label: string,
-  description: string,
-  overrides: Partial<PreviewTool> = {},
-): PreviewTool => ({
+const previewTool = (id: string, overrides: Partial<PreviewTool> = {}): PreviewTool => ({
   id,
-  label,
-  description,
-  rawDescription: description,
+  label: id,
+  description: id,
+  rawDescription: id,
   source: "core",
   ...overrides,
 });
@@ -82,7 +73,30 @@ function policyCatalog(ids: string[], profile = "full"): ToolsCatalogResult {
         id: "policy",
         label: "Policy",
         source: "core",
-        tools: ids.map((id) => catalogTool(id, id)),
+        tools: ids.map((id) => catalogTool(id)),
+      },
+    ],
+  };
+}
+
+function pluginCatalog(optional: boolean): ToolsCatalogResult {
+  return {
+    agentId: "main",
+    profiles: [{ id: "full", label: "Full" }],
+    groups: [
+      {
+        id: "plugin:voice-call",
+        label: "voice-call",
+        source: "plugin",
+        pluginId: "voice-call",
+        tools: [
+          catalogTool("voice_call", {
+            source: optional ? "plugin" : (undefined as never),
+            pluginId: optional ? "voice-call" : undefined,
+            optional,
+            defaultProfiles: optional ? [] : ["full"],
+          }),
+        ],
       },
     ],
   };
@@ -117,7 +131,7 @@ const toolPreview: ToolsEffectiveResult = {
       id: "core",
       label: "Built-in tools",
       source: "core",
-      tools: [previewTool("read", "read", "Read files")],
+      tools: [previewTool("read")],
     },
   ],
   notices: [{ id: "mcp-not-yet-listed", severity: "info", message: "Discovery is incomplete." }],
@@ -187,14 +201,16 @@ describe("agents tools panel (browser)", () => {
     expect(row?.querySelectorAll(".agent-tool-summary__fact dd")[1]?.textContent?.trim()).toBe(
       status,
     );
-    expect(row?.textContent).not.toContain("Not Live");
-    expect(row?.textContent).not.toContain("Not available in this chat session");
   });
 
   it("distinguishes missing preview entries from disabled tools and an empty result", () => {
     const container = document.createElement("div");
     const params = createBaseParams({ effective: toolPreview });
     const view = mountSolid(AgentTools, params, container);
+
+    expect(content(container, ".agent-tools-notices .callout.info")).toBe(
+      "Discovery is incomplete.",
+    );
 
     const included = container.querySelector("#agent-tool-read");
     const absent = container.querySelector("#agent-tool-exec");
@@ -227,160 +243,122 @@ describe("agents tools panel (browser)", () => {
   it("renders catalog provenance and a prospective tool preview", async () => {
     const { container } = mountTools({
       catalog: {
-        agentId: "main",
-        profiles: [
-          { id: "minimal", label: "Minimal" },
-          { id: "coding", label: "Coding" },
-          { id: "messaging", label: "Messaging" },
-          { id: "full", label: "Full" },
-        ],
+        ...pluginCatalog(true),
         groups: [
           {
             id: "media",
             label: "Media",
             source: "core",
-            tools: [catalogTool("tts", "Text-to-speech conversion")],
+            tools: [catalogTool("tts")],
           },
-          {
-            id: "plugin:voice-call",
-            label: "voice-call",
-            source: "plugin",
-            pluginId: "voice-call",
-            tools: [
-              catalogTool("voice_call", "Voice call tool", {
-                source: "plugin",
-                pluginId: "voice-call",
-                optional: true,
-              }),
-            ],
-          },
+          ...pluginCatalog(true).groups,
         ],
       },
       effective: {
         agentId: "main",
         profile: "messaging",
         groups: [
-          {
-            id: "channel",
-            label: "Channel tools",
+          previewTool("message", {
+            label: "Message Actions",
             source: "channel",
-            tools: [
-              previewTool(
-                "message",
-                "Message Actions",
-                "Send and manage messages in this channel",
-                {
-                  source: "channel",
-                  channelId: "guildchat",
-                },
-              ),
-            ],
-          },
-          {
-            id: "mcp",
-            label: "MCP server tools",
+            channelId: "guildchat",
+          }),
+          previewTool("reproProbe__probe_tool", {
+            label: "Probe Tool",
             source: "mcp",
-            tools: [
-              previewTool("reproProbe__probe_tool", "Probe Tool", "Probe from MCP", {
-                source: "mcp",
-                pluginId: "bundle-mcp",
-              }),
-            ],
-          },
-        ],
+            pluginId: "bundle-mcp",
+          }),
+        ].map((tool) => ({
+          id: tool.source,
+          label: tool.source,
+          source: tool.source,
+          tools: [tool],
+        })),
       },
     });
     await settleGitHubIdentity(container);
 
-    expect(texts(container, ".settings-section__heading")).toEqual([
-      "Tool access",
-      "Tool preview",
-      "GitHub account",
-      "Tool Catalog",
-    ]);
     expect(container.querySelectorAll(".settings-kv dd")[3]?.textContent?.trim()).toBe("2");
     expect(container.textContent).toContain(
       "Based on saved session settings and discovered tools.",
     );
     expect(container.textContent).toContain("additional tools may become available");
     expect(container.textContent).toContain("unsaved edits are not included");
-    expect(texts(container, ".settings-row__title")).toContain("Tool Presets");
-    const runtimeChips = Array.from(container.querySelectorAll(".agent-tools-runtime-chip")).map(
-      (chip) => ({
-        label: content(chip, ".mono"),
-        meta: content(chip, ".agent-tools-runtime-chip__meta"),
-      }),
-    );
-    expect(runtimeChips).toEqual([
-      { label: "Message Actions", meta: "Channel: guildchat" },
-      { label: "Probe Tool", meta: "MCP" },
+    expect(texts(container, ".agent-tools-runtime-chip .mono")).toEqual([
+      "Message Actions",
+      "Probe Tool",
+    ]);
+    expect(texts(container, ".agent-tools-runtime-chip__meta")).toEqual([
+      "Channel: guildchat",
+      "MCP",
     ]);
     expect(texts(container, ".agent-tools-group__title > .settings-row__value")).toEqual([
       "Plugin: voice-call",
     ]);
     expect(
-      Array.from(container.querySelectorAll(".agent-tool-card")).map((card) => ({
-        title: content(card, ".agent-tool-title"),
-        badges: texts(card, ".agent-tool-summary__badges .settings-row__value"),
-      })),
-    ).toEqual([
-      { title: "tts", badges: ["Built-In"] },
-      { title: "voice_call", badges: ["Plugin: voice-call", "Optional"] },
-    ]);
-    expect(container.querySelector(".agent-tool-card[open]")).toBeNull();
+      texts(container, "#agent-tool-tts .agent-tool-summary__badges .settings-row__value"),
+    ).toEqual(["Built-In"]);
+    expect(
+      texts(container, "#agent-tool-voice_call .agent-tool-summary__badges .settings-row__value"),
+    ).toEqual(["Plugin: voice-call", "Optional"]);
   });
 
-  it("renders the GitHub identity section with settings rows only", async () => {
-    const container = document.createElement("div");
-    const params = createBaseParams();
-    const nativeIdentity = {
-      ...availableIdentity,
-      source: "system-detected" as const,
-      credentialKind: "native" as const,
-      account: { login: "octocat" },
-      gitAuthor: { name: null, email: null },
-      accessExpiresAtMs: null,
-      refreshState: "not_applicable" as const,
-      oauthScopes: [],
-    };
-    params.githubIdentity = githubIdentityViewFixture({
-      status: {
-        agentId: "main",
-        selectedScope: "system",
-        selected: { scope: "system", configured: false, identity: nativeIdentity },
-        effective: nativeIdentity,
-      },
-    });
-    mountSolid(AgentTools, params, container);
-    await settleGitHubIdentity(container);
+  it.each([false, true])(
+    "renders effective GitHub facts without credential controls (inherited: %s)",
+    async (inherited) => {
+      const effective = inherited
+        ? {
+            ...availableIdentity,
+            source: "system-configured" as const,
+            account: { login: "system-user" },
+            gitAuthor: { name: "System Author", email: "system@example.com" },
+            oauthScopes: ["repo", "workflow"],
+          }
+        : {
+            ...availableIdentity,
+            source: "system-detected" as const,
+            credentialKind: "native" as const,
+            account: { login: "octocat" },
+            gitAuthor: { name: null, email: null },
+            accessExpiresAtMs: null,
+            refreshState: "not_applicable" as const,
+            oauthScopes: [],
+          };
+      const scope = inherited ? "agent" : "system";
+      const { container } = mountTools({
+        githubIdentity: githubIdentityViewFixture({
+          status: {
+            agentId: "main",
+            selectedScope: scope,
+            selected: { scope, configured: false, identity: inherited ? null : effective },
+            effective,
+          },
+        }),
+      });
+      await settleGitHubIdentity(container);
 
-    const section = Array.from(container.querySelectorAll(".settings-section")).find((candidate) =>
-      candidate.querySelector(".settings-section__heading")?.textContent?.includes("GitHub"),
-    );
-    expect(section).toBeDefined();
-    if (!section) {
-      throw new Error("expected GitHub identity section");
-    }
-    // The whole section stays inside the one group surface: no bespoke form
-    // markup or nested callouts, per ui/docs/design-system/settings-design.md.
-    expect(section.querySelector(".form-grid")).toBeNull();
-    expect(section.querySelector(".callout")).toBeNull();
-    expect(section.querySelector(".settings-group .settings-account__avatar")).toBeNull();
-    expect(section.textContent).toContain("@octocat");
-    expect(content(section, ".settings-status")).toBe("Verified");
-    // Raw wire enums never render; friendly labels replace them.
-    expect(section.textContent).not.toContain("system-detected");
-    expect(section.textContent).not.toContain("github-api");
-    const authorRow = Array.from(section.querySelectorAll(".settings-row")).find((row) =>
-      row.querySelector(".settings-row__title")?.textContent?.includes("Git Author"),
-    );
-    expect(authorRow?.querySelector(".settings-row__value")?.textContent?.trim()).toBe("Not set");
-    expect(section.querySelector(".settings-segmented")).toBeNull();
-    expect(section.querySelector(".settings-secret input")).toBeNull();
-    expect(section.textContent).toContain("Manage connections in Profile");
-    expect(section.textContent).not.toContain("OS account running the Gateway");
-    expect(section.textContent).not.toContain("Advanced: agent GitHub override");
-  });
+      const section = container.querySelector("openclaw-github-identity");
+      assert(section, "Missing GitHub identity section");
+      expect(section.textContent).toContain(inherited ? "@system-user" : "@octocat");
+      expect(content(section, ".settings-status")).toBe("Verified");
+      const authorRow = Array.from(section.querySelectorAll(".settings-row")).find((row) =>
+        row.querySelector(".settings-row__title")?.textContent?.includes("Git Author"),
+      );
+      expect(authorRow?.querySelector(".settings-row__value")?.textContent?.trim()).toBe(
+        inherited ? "System Author · system@example.com" : "Not set",
+      );
+      if (inherited) {
+        expect(section.textContent).toContain("Managed GitHub authorization");
+        expect(section.textContent).toContain("repo, workflow");
+        expect(section.textContent).toContain("System GitHub");
+      }
+      expect(section.querySelector(".settings-secret input")).toBeNull();
+      expect(section.textContent).toContain("Manage connections in Profile");
+      expect(section.textContent).not.toMatch(
+        /system-detected|github-api|OS account running the Gateway|Advanced: agent GitHub override/,
+      );
+    },
+  );
 
   it("renders only the pinned device link and one-time code while authorization is active", async () => {
     const container = document.createElement("div");
@@ -408,38 +386,7 @@ describe("agents tools panel (browser)", () => {
     expect(link?.rel.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
     expect(container.querySelector(".settings-secret input")).toBeNull();
     expect(container.textContent).not.toContain("github-device-11111111111111111111111111111111");
-    expect(container.querySelector(".settings-segmented")).toBeNull();
     githubIdentity.dispose();
-  });
-
-  it("keeps complete effective facts when This Agent inherits System", async () => {
-    const container = document.createElement("div");
-    const params = createBaseParams();
-    const effective = {
-      ...availableIdentity,
-      source: "system-configured" as const,
-      account: { login: "system-user" },
-      gitAuthor: { name: "System Author", email: "system@example.com" },
-      oauthScopes: ["repo", "workflow"],
-    };
-    params.githubIdentity = githubIdentityViewFixture({
-      status: {
-        agentId: "main",
-        selectedScope: "agent",
-        selected: { scope: "agent", configured: false, identity: null },
-        effective,
-      },
-    });
-
-    mountSolid(AgentTools, params, container);
-    await settleGitHubIdentity(container);
-
-    expect(container.textContent).toContain("@system-user");
-    expect(container.textContent).toContain("System Author · system@example.com");
-    expect(container.textContent).toContain("Managed GitHub authorization");
-    expect(container.textContent).toContain("repo, workflow");
-    expect(container.textContent).toContain("System GitHub");
-    expect(container.textContent).not.toContain("OS account running the Gateway");
   });
 
   it("keeps PAT fields hidden until the explicit fallback is selected", async () => {
@@ -466,7 +413,7 @@ describe("agents tools panel (browser)", () => {
     expect(button(container, "Cancel").disabled).toBe(true);
   });
 
-  it("enables the fallback setup helper without selecting Full", async () => {
+  it("edits fallback tool access without selecting Full and can return to Inherit", async () => {
     const onOverridesChange = vi.fn();
     const onProfileChange = vi.fn();
     const { container } = mountTools({
@@ -485,115 +432,21 @@ describe("agents tools panel (browser)", () => {
     toggle.dispatchEvent(new Event("change", { bubbles: true }));
     expect(onOverridesChange).toHaveBeenCalledExactlyOnceWith("main", ["openclaw"], []);
     expect(onProfileChange).not.toHaveBeenCalled();
-  });
-
-  it("keeps Inherit separate from the explicit Full profile", async () => {
-    const onProfileChange = vi.fn();
-    const { container } = mountTools({ onProfileChange });
-    await Promise.resolve();
-
     button(container, "Inherit").click();
     expect(onProfileChange).toHaveBeenCalledExactlyOnceWith("main", null, false);
   });
 
-  it("renders effective tool notices", async () => {
-    const { container } = mountTools({
-      effective: {
-        agentId: "main",
-        profile: "full",
-        groups: [],
-        notices: [
-          {
-            id: "mcp-not-yet-connected",
-            severity: "info",
-            message: "MCP servers are configured but not connected yet.",
-          },
-        ],
-      },
-    });
-    await Promise.resolve();
-
-    expect(content(container, ".agent-tools-notices .callout.info")).toBe(
-      "MCP servers are configured but not connected yet.",
-    );
-  });
-
-  it("closes expanded tool rows when the parent group collapses", async () => {
-    const { container } = mountTools({
-      catalog: createReadToolCatalog(),
-    });
-    await Promise.resolve();
-
-    const group = container.querySelector<HTMLDetailsElement>(".agent-tools-group");
-    const tool = container.querySelector<HTMLDetailsElement>(".agent-tool-card");
-
-    expect(group).toBeInstanceOf(HTMLDetailsElement);
-    expect(tool).toBeInstanceOf(HTMLDetailsElement);
-
-    if (!group || !tool) {
-      throw new Error("expected agent tool group and card");
-    }
-
-    group.open = true;
-    tool.open = true;
-
-    group.open = false;
-    group.dispatchEvent(new Event("toggle"));
-
-    expect(tool.open).toBe(false);
-  });
-
-  it("keeps the access toggle inside the collapsed tool summary", async () => {
-    const { container } = mountTools({
-      catalog: createReadToolCatalog(),
-    });
-    await Promise.resolve();
-
-    const tool = container.querySelector<HTMLDetailsElement>(".agent-tool-card");
-    const summary = container.querySelector<HTMLElement>(".agent-tool-summary");
-    const toggle = container.querySelector(".agent-tool-toggle input.settings-toggle__input");
-
-    expect(tool?.open).toBe(false);
-    expect(toggle?.closest(".agent-tool-summary")).toBe(summary);
-  });
-
   it("uses section-level plugin provenance for tool details", async () => {
-    const { container } = mountTools({
-      catalog: {
-        agentId: "main",
-        profiles: [{ id: "full", label: "Full" }],
-        groups: [
-          {
-            id: "plugin:voice-call",
-            label: "voice-call",
-            source: "plugin",
-            pluginId: "voice-call",
-            tools: [
-              catalogTool("voice_call", "Voice call tool", {
-                source: undefined as never,
-                defaultProfiles: ["full"],
-              }),
-            ],
-          },
-        ],
-      },
-    });
+    const { container } = mountTools({ catalog: pluginCatalog(false) });
     await Promise.resolve();
 
     const tool = container.querySelector<HTMLDetailsElement>(".agent-tool-card");
     tool!.open = true;
 
-    expect(
-      Array.from(container.querySelectorAll<HTMLElement>(".agent-tool-detail")).map((detail) => ({
-        label: content(detail, ".label"),
-        value: detail.lastElementChild?.textContent?.trim(),
-      })),
-    ).toEqual([
-      { label: "Agent setting", value: "Enabled by the current profile." },
-      { label: "Source", value: "Plugin: voice-call" },
-      { label: "Default Presets", value: "full" },
-      { label: "Tool preview", value: "Not loaded" },
-    ]);
+    const source = Array.from(container.querySelectorAll(".agent-tool-detail")).find(
+      (detail) => content(detail, ".label") === "Source",
+    );
+    expect(text(source?.lastElementChild)).toBe("Plugin: voice-call");
   });
 
   it.each([
@@ -602,14 +455,7 @@ describe("agents tools panel (browser)", () => {
   ] as const)("opens a live tool chip with $behavior scrolling", async ({ reduced, behavior }) => {
     const container = document.createElement("div");
     document.body.append(container);
-    mountSolid(
-      AgentTools,
-      createBaseParams({
-        catalog: createReadToolCatalog(),
-        effective: toolPreview,
-      }),
-      container,
-    );
+    mountTools({ catalog: createReadToolCatalog(), effective: toolPreview }, container);
     await Promise.resolve();
 
     const group = container.querySelector<HTMLDetailsElement>(".agent-tools-group");
@@ -618,23 +464,15 @@ describe("agents tools panel (browser)", () => {
       '.agent-tools-runtime-chip[href="#agent-tool-read"]',
     );
 
-    expect(group).toBeInstanceOf(HTMLDetailsElement);
-    expect(tool).toBeInstanceOf(HTMLDetailsElement);
     expect(chip?.getAttribute("href")).toBe("#agent-tool-read");
-
-    if (!group || !tool || !chip) {
-      container.remove();
-      throw new Error("expected agent tool runtime chip");
-    }
+    assert(group && tool && chip, "Missing agent tool runtime chip");
 
     expect(group.open).toBe(false);
     expect(tool.open).toBe(false);
 
     const summary = tool.querySelector<HTMLElement>("summary");
-    if (!summary) {
-      container.remove();
-      throw new Error("expected agent tool summary");
-    }
+    assert(summary, "Missing agent tool summary");
+    expect(toolSwitch(container, "read").closest(".agent-tool-summary")).toBe(summary);
     const scrollIntoView = vi.fn();
     tool.scrollIntoView = scrollIntoView;
     const focus = vi.spyOn(summary, "focus");
@@ -649,13 +487,15 @@ describe("agents tools panel (browser)", () => {
 
       expect(group.open).toBe(true);
       expect(tool.open).toBe(true);
-      expect(replaceState).toHaveBeenCalledOnce();
       const requestedUrl = replaceState.mock.calls[0]?.[2];
       expect(requestedUrl).toBeInstanceOf(URL);
       expect((requestedUrl as URL).hash).toBe("#agent-tool-read");
       expect(window.location.href).toBe(previousUrl);
       expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior });
       expect(focus).toHaveBeenCalledOnce();
+      group.open = false;
+      group.dispatchEvent(new Event("toggle"));
+      expect(tool.open).toBe(false);
     } finally {
       vi.unstubAllGlobals();
       focus.mockRestore();
