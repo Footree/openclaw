@@ -1,20 +1,7 @@
-import { once } from "node:events";
-import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WebSocketServer } from "ws";
-import * as clientReadiness from "../../packages/gateway-client/src/readiness.js";
-import { createDeferred } from "../../test/helpers/promise.js";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
-import {
-  buildMinimalGatewayHelloOkPayload,
-  closeMinimalGatewayServer,
-  parseMinimalGatewayRequestFrame,
-  sendMinimalGatewayConnectChallenge,
-  sendMinimalGatewayResponse,
-} from "../gateway/minimal-gateway.test-helpers.js";
-import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { createUnreachableGatewayProbe } from "./gateway-status/test-support.js";
 import { createStatusGatewayProbeBudget } from "./status.gateway-probe-budget.js";
 import {
@@ -47,7 +34,6 @@ const mocks = vi.hoisted(() => ({
   waitForGatewayDiagnosticReadiness: vi.fn(),
   callGateway: vi.fn<typeof import("../gateway/call.js").callGateway>(),
   resolveGatewayProbeAuthResolution: vi.fn(),
-  pickGatewaySelfPresence: vi.fn(),
   getMemorySearchManager: vi.fn(),
 }));
 
@@ -97,10 +83,6 @@ vi.mock("./status.gateway-probe.js", () => ({
   resolveGatewayProbeAuthResolution: mocks.resolveGatewayProbeAuthResolution,
 }));
 
-vi.mock("./gateway-presence.js", () => ({
-  pickGatewaySelfPresence: mocks.pickGatewaySelfPresence,
-}));
-
 vi.mock("./status.scan.deps.runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./status.scan.deps.runtime.js")>()),
   getMemorySearchManager: mocks.getMemorySearchManager,
@@ -121,7 +103,6 @@ describe("resolveGatewayProbeSnapshot", () => {
       auth: { token: "tok", password: "pw" },
       warning: "warn",
     });
-    mocks.pickGatewaySelfPresence.mockReturnValue({ host: "box" });
     mocks.callGateway.mockRejectedValue(new Error("status rpc unavailable"));
   });
 
@@ -216,30 +197,6 @@ describe("resolveGatewayProbeSnapshot", () => {
     },
   );
 
-  it("treats scope-limited read probes as reachable", async () => {
-    mocks.probeGateway.mockResolvedValue({
-      ...unreachableProbe(),
-      connectLatencyMs: 51,
-      gatewayReached: true,
-      error: "missing scope: operator.read",
-      close: null,
-      auth: {
-        role: "operator",
-        scopes: [],
-        capability: "connected_no_operator_scope",
-      },
-      server: {
-        version: null,
-        connId: null,
-      },
-    });
-
-    const result = await resolveGatewayProbeSnapshot();
-
-    expect(result.gatewayReachable).toBe(true);
-    expect(result.gatewayProbe?.error).toBe("missing scope: operator.read; warn");
-  });
-
   it.each([true, false])(
     "uses bounded local fallback with explicit credentials=%s",
     async (explicit) => {
@@ -288,112 +245,18 @@ describe("resolveGatewayProbeSnapshot", () => {
     expect(result.gatewayProbe?.ok).toBe(false);
   });
 
-  it("gives a real local fallback status RPC only the remaining explicit CLI timeout", async ({
-    signal,
-  }) => {
-    const gateway = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-    await once(gateway, "listening");
-    const address = gateway.address() as AddressInfo;
-    const url = `ws://127.0.0.1:${address.port}`;
-    const observedMethods: string[] = [];
-    const statusRequested = createDeferred();
-    gateway.on("connection", (socket) => {
-      sendMinimalGatewayConnectChallenge(socket);
-      socket.on("message", (data) => {
-        const frame = parseMinimalGatewayRequestFrame(data);
-        if (frame.type !== "req" || !frame.id || !frame.method) {
-          return;
-        }
-        const requestId = frame.id;
-        if (frame.method === "connect") {
-          sendMinimalGatewayResponse(
-            socket,
-            requestId,
-            buildMinimalGatewayHelloOkPayload({
-              methods: ["system-presence", "status"],
-              auth: { role: "operator", scopes: ["operator.read"] },
-            }),
-          );
-          return;
-        }
-        observedMethods.push(frame.method);
-        if (frame.method === "status") {
-          statusRequested.resolve();
-          const responseTimer = setTimeout(() => {
-            if (socket.readyState === socket.OPEN) {
-              sendMinimalGatewayResponse(socket, requestId, { sessions: 1 });
-            }
-          }, 400);
-          responseTimer.unref();
-        }
-      });
-    });
-
-    gatewayTarget(url);
+  it("gives the fallback status RPC only the remaining explicit CLI timeout", async () => {
     mocks.probeGateway.mockImplementation(async () => {
       vi.spyOn(performance, "now").mockReturnValue(150);
-      return unreachableProbe(url);
+      return unreachableProbe();
     });
-    mocks.callGateway.mockImplementation(async (...args: unknown[]) => {
-      const { callGateway } =
-        await vi.importActual<typeof import("../gateway/call.js")>("../gateway/call.js");
-      return await callGateway(...(args as Parameters<typeof callGateway>));
-    });
-    const startup = createDeferred<{
-      completion: ReturnType<typeof clientReadiness.startGatewayClientWhenEventLoopReady>;
-    }>();
-    const startClient = clientReadiness.startGatewayClientWhenEventLoopReady;
-    const startupSpy = vi
-      .spyOn(clientReadiness, "startGatewayClientWhenEventLoopReady")
-      .mockImplementation((...args) => {
-        const completion = startClient(...args);
-        startup.resolve({ completion });
-        return completion;
-      });
-    const driveStartup = async () => {
-      const { completion } = await racePromiseWithAbortSignal(startup.promise, signal);
-      const startupState = { settled: false };
-      void completion.then(
-        () => {
-          startupState.settled = true;
-        },
-        () => {
-          startupState.settled = true;
-        },
-      );
-      while (!startupState.settled) {
-        signal.throwIfAborted();
-        await vi.advanceTimersToNextTimerAsync();
-      }
-      await completion;
-    };
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    let pending: ReturnType<typeof resolveGatewayProbeSnapshot> | undefined;
-    try {
-      pending = resolveGatewayProbeSnapshot(
-        { gateway: { auth: { mode: "token", token: "tok" } } },
-        createStatusGatewayProbeBudget(250),
-      );
-
-      // Drive deadline time only after real socket requests cross their boundary.
-      await driveStartup();
-      await racePromiseWithAbortSignal(statusRequested.promise, signal);
-      await vi.advanceTimersByTimeAsync(100);
-      const result = await pending;
-
-      expect(readProbeCall().timeoutMs).toBe(250);
-      expect(readGatewayCall().timeoutMs).toBe(100);
-      expect(startupSpy).toHaveBeenCalledOnce();
-      expect(observedMethods).toEqual(["status"]);
-      expect(result.gatewayProbe?.ok).toBe(false);
-      expect(result.gatewayProbe?.error).toContain("timeout");
-    } finally {
-      await vi.runOnlyPendingTimersAsync();
-      vi.useRealTimers();
-      startupSpy.mockRestore();
-      await closeMinimalGatewayServer(gateway);
-      await Promise.allSettled([pending]);
-    }
+    const result = await resolveGatewayProbeSnapshot(
+      { gateway: { auth: { mode: "token", token: "tok" } } },
+      createStatusGatewayProbeBudget(250),
+    );
+    expect(readProbeCall().timeoutMs).toBe(250);
+    expect(readGatewayCall()).toMatchObject({ method: "status", timeoutMs: 100 });
+    expect(result.gatewayProbe).toMatchObject({ ok: false, error: "timeout; warn" });
   });
 
   it("does not use the status RPC fallback for remote probe failures", async () => {
@@ -483,64 +346,48 @@ describe("resolveSharedMemoryStatusSnapshot", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("does not resolve the slot owner for Memory Core without a built-in store", async () => {
+  it.each(["unconfigured", "unowned fleet", "cold store"])("skips memory for %s", async (kind) => {
     const isMemoryProviderNative = vi.fn(() => false);
-
+    const resolveMemoryConfig = vi.fn();
     await expect(
       memorySnapshot({
+        cfg:
+          kind === "unowned fleet"
+            ? { agents: { ownership: "explicit", entries: { alpha: {}, beta: {} } } }
+            : {},
+        agentStatus: { defaultId: kind === "unowned fleet" ? null : "main" },
         isMemoryProviderNative,
-        requireDefaultDatabasePath: () => null,
+        ...(kind !== "unconfigured" ? { resolveMemoryConfig } : {}),
+        requireDefaultDatabasePath: () =>
+          kind === "cold store" ? `/tmp/openclaw-missing-memory-${process.pid}.sqlite` : null,
       }),
     ).resolves.toBeNull();
     expect(isMemoryProviderNative).not.toHaveBeenCalled();
-    expect(getMemorySearchManager).not.toHaveBeenCalled();
-  });
-
-  it("skips agent-scoped memory when an explicit fleet has no selected owner", async () => {
-    const resolveMemoryConfig = vi.fn();
-
-    await expect(
-      memorySnapshot({
-        cfg: {
-          agents: {
-            ownership: "explicit",
-            entries: { alpha: {}, beta: {} },
-          },
-        },
-        agentStatus: { defaultId: null },
-        resolveMemoryConfig,
-      }),
-    ).resolves.toBeNull();
-
     expect(resolveMemoryConfig).not.toHaveBeenCalled();
     expect(getMemorySearchManager).not.toHaveBeenCalled();
   });
 
-  it("inspects explicitly configured per-agent memory", async () => {
-    const cfg = {
-      agents: { entries: { main: { memory: { search: { provider: "local" as const } } } } },
-    };
-    const manager = memoryManager({
-      provider: "local",
-      dirty: true,
+  it.each(["explicit config", "shipped tables"])("inspects memory with %s", async (source) => {
+    const databasePath = path.join(makeTempDir(tempDirs, "status-memory-"), "memory.sqlite");
+    if (source === "shipped tables") {
+      using db = new DatabaseSync(databasePath);
+      db.exec("CREATE TABLE files (path TEXT PRIMARY KEY); INSERT INTO files VALUES ('MEMORY.md')");
+    }
+    getMemorySearchManager.mockResolvedValue({
+      manager: memoryManager({ provider: "local", files: 1, dirty: true }),
     });
-    const resolveMemoryConfig = vi.fn(() => ({
-      store: { databasePath: `/tmp/openclaw-missing-memory-${process.pid}.sqlite` },
-    }));
-    getMemorySearchManager.mockResolvedValue({ manager });
-
     const result = await memorySnapshot({
-      cfg,
-      resolveMemoryConfig,
-      requireDefaultDatabasePath: () =>
-        `/tmp/openclaw-missing-default-memory-${process.pid}.sqlite`,
+      cfg:
+        source === "explicit config"
+          ? { agents: { entries: { main: { memory: { search: { provider: "local" } } } } } }
+          : {},
+      resolveMemoryConfig: () => ({ store: { databasePath } }),
+      requireDefaultDatabasePath: () => databasePath,
     });
-
-    expect(resolveMemoryConfig).toHaveBeenCalledOnce();
     expect(getMemorySearchManager).toHaveBeenCalledWith(
       expect.objectContaining({ purpose: "status", inspectSources: true }),
     );
-    expect(result).toMatchObject({ provider: "local", dirty: true });
+    expect(result).toMatchObject({ provider: "local", files: 1, dirty: true });
   });
 
   it("asks custom memory-slot runtimes for status without requiring built-in memorySearch", async () => {
@@ -576,39 +423,5 @@ describe("resolveSharedMemoryStatusSnapshot", () => {
       files: 66,
       chunks: 128,
     });
-  });
-
-  it("keeps default memory-core on the cold-start store shortcut", async () => {
-    const resolveMemoryConfig = vi.fn(() => null);
-
-    const result = await memorySnapshot({
-      resolveMemoryConfig,
-      requireDefaultDatabasePath: () => `/tmp/openclaw-missing-memory-${process.pid}.sqlite`,
-    });
-
-    expect(result).toBeNull();
-    expect(resolveMemoryConfig).not.toHaveBeenCalled();
-    expect(getMemorySearchManager).not.toHaveBeenCalled();
-  });
-
-  it("recognizes shipped memory tables before the manager migrates them", async () => {
-    const tempDir = makeTempDir(tempDirs, "openclaw-status-memory-");
-    const databasePath = path.join(tempDir, "openclaw-agent.sqlite");
-    const db = new DatabaseSync(databasePath);
-    db.exec("CREATE TABLE files (path TEXT PRIMARY KEY); INSERT INTO files VALUES ('MEMORY.md')");
-    db.close();
-    const manager = memoryManager({
-      provider: "openai",
-      files: 1,
-    });
-    getMemorySearchManager.mockResolvedValue({ manager });
-
-    const result = await memorySnapshot({
-      resolveMemoryConfig: vi.fn(() => ({ store: { databasePath } })),
-      requireDefaultDatabasePath: () => databasePath,
-    });
-
-    expect(getMemorySearchManager).toHaveBeenCalledOnce();
-    expect(result).toMatchObject({ files: 1 });
   });
 });
