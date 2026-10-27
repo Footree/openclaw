@@ -465,11 +465,7 @@ it.skipIf(process.platform === "win32")(
     const persisted = readCapture(root, settings);
     expect(persisted?.session?.endedAt).toBeTypeOf("number");
     expect(persisted?.rows).toEqual([
-      expect.objectContaining({
-        kind: "ws-frame",
-        flowId: "queued-at-signal",
-        dataText: payload,
-      }),
+      expect.objectContaining({ kind: "ws-frame", flowId: "queued-at-signal", dataText: payload }),
     ]);
     expect(persisted?.payload).toBe(payload);
   },
@@ -504,11 +500,7 @@ it.each(["host-only", "legacy-first", "async-first"])(
     const wsBytes = Buffer.from("websocket original");
     const wsMeta = { provider: "fixture", detail: { phase: "accepted" } };
     const wsWriting = captureWsEventAsync(
-      {
-        ...frame(wsBytes, "ws-before-admission"),
-        direction: "outbound",
-        meta: wsMeta,
-      },
+      { ...frame(wsBytes, "ws-before-admission"), direction: "outbound", meta: wsMeta },
       settings,
       deps,
     );

@@ -14,7 +14,6 @@ import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
-import type { DebugProxySettings } from "./env.js";
 import { startDebugProxyServer } from "./proxy-server.js";
 import { createDebugProxyCaptureReaderAsync } from "./store-readonly.async.js";
 
@@ -26,10 +25,29 @@ let testRoot: string | undefined;
 const cleanup: Array<() => void | Promise<void>> = [];
 
 async function startProxy() {
-  const settings = await makeSettings();
+  testRoot = await mkdtemp(join(tmpdir(), "openclaw-debug-proxy-server-"));
+  vi.stubEnv("OPENCLAW_STATE_DIR", testRoot);
+  const settings = {
+    enabled: true,
+    required: false,
+    dbPath: join(testRoot, "capture.sqlite"),
+    blobDir: join(testRoot, "blobs"),
+    certDir: join(testRoot, "certs"),
+    sessionId: "debug-proxy-server-test",
+    sourceProcess: "test",
+  };
   const proxy = await startDebugProxyServer({ settings });
   cleanup.push(proxy.stop);
-  return { settings, proxy };
+  const events = () =>
+    createDebugProxyCaptureReaderAsync({ env: process.env }).getSessionEvents(
+      settings.sessionId,
+      20,
+    );
+  const captured = async () => {
+    await proxy.stop();
+    return events();
+  };
+  return { proxy, events, captured };
 }
 
 async function cleanupTestRoot(): Promise<void> {
@@ -41,27 +59,6 @@ async function cleanupTestRoot(): Promise<void> {
   const root = testRoot;
   testRoot = undefined;
   await rm(root, { recursive: true, force: true });
-}
-
-async function makeSettings(): Promise<DebugProxySettings> {
-  testRoot = await mkdtemp(join(tmpdir(), "openclaw-debug-proxy-server-"));
-  vi.stubEnv("OPENCLAW_STATE_DIR", testRoot);
-  return {
-    enabled: true,
-    required: false,
-    dbPath: join(testRoot, "capture.sqlite"),
-    blobDir: join(testRoot, "blobs"),
-    certDir: join(testRoot, "certs"),
-    sessionId: "debug-proxy-server-test",
-    sourceProcess: "test",
-  };
-}
-
-function readCaptureEvents(sessionId: string, limit: number) {
-  return createDebugProxyCaptureReaderAsync({ env: process.env }).getSessionEvents(
-    sessionId,
-    limit,
-  );
 }
 
 async function listenOrigin(server: Server, path = "") {
@@ -127,10 +124,6 @@ type ProxyResponseResult = {
   statusCode?: number;
   statusLine?: string;
 };
-
-function originalMethod<Owner, Key extends keyof Owner>(owner: Owner, key: Key) {
-  return owner[key];
-}
 
 type ProxyClientOptions = {
   abortAfterBytes?: number;
@@ -280,7 +273,7 @@ async function startConnectProxy(connectTarget: string) {
     upstream.once("connect", onConnect);
     return upstream;
   }) as typeof net.connect);
-  const { settings, proxy } = await startProxy();
+  const { proxy, captured } = await startProxy();
   cleanup.push(() => {
     upstream.destroy();
   });
@@ -295,8 +288,8 @@ async function startConnectProxy(connectTarget: string) {
   await opened;
   socket.write(`CONNECT ${connectTarget} HTTP/1.1\r\nHost: ${connectTarget}\r\n\r\n`);
   return {
-    settings,
     proxy,
+    captured,
     upstream,
     client: socket,
     connected: connected.promise,
@@ -315,16 +308,14 @@ afterEach(async () => {
 describe("startDebugProxyServer", () => {
   it("caps UTF-8 previews on character boundaries while forwarding full bodies", async () => {
     const origin = await startLargeBodyOrigin(`${"r".repeat(8191)}😀tail`);
-    const { settings, proxy } = await startProxy();
+    const { proxy, captured } = await startProxy();
     const requestBody = `${"q".repeat(8191)}étail`;
 
     const response = await getThroughProxy(proxy.proxyUrl, origin.url, requestBody);
 
     expect(origin.receivedRequestBody()).toBe(requestBody);
-    expect(response.body).toBe(origin.responseBody);
-    expect(response.complete).toBe(true);
-    await proxy.stop();
-    const events = await readCaptureEvents(settings.sessionId, 10);
+    expect(response).toMatchObject({ body: origin.responseBody, complete: true });
+    const events = await captured();
     for (const { kind, body, prefix } of [
       { kind: "request", body: requestBody, prefix: "q" },
       { kind: "response", body: origin.responseBody, prefix: "r" },
@@ -342,7 +333,7 @@ describe("startDebugProxyServer", () => {
   it("pauses the upstream response while downstream forwarding is backpressured", async () => {
     const responseBodyBytes = 16 * 1024 * 1024;
     const origin = await startStreamingProxyOrigin(responseBodyBytes);
-    const { settings, proxy } = await startProxy();
+    const { proxy, captured } = await startProxy();
     const targetUrl = `${origin.url}/capture`;
     const originPort = Number(new URL(origin.url).port);
     const abortController = new AbortController();
@@ -352,7 +343,7 @@ describe("startDebugProxyServer", () => {
     let bytesReadWhileBackpressured = 0;
     const drainStates: { pausedBefore: boolean | undefined; pausedAfter: boolean | undefined }[] =
       [];
-    const callOn = originalMethod(IncomingMessage.prototype, "on");
+    const callOn = IncomingMessage.prototype.on;
     vi.spyOn(IncomingMessage.prototype, "on").mockImplementation(function (
       this: IncomingMessage,
       ...args: Parameters<IncomingMessage["on"]>
@@ -368,7 +359,7 @@ describe("startDebugProxyServer", () => {
       }
       return callOn.call(this, ...args);
     });
-    const callWrite = originalMethod(ServerResponse.prototype, "write");
+    const callWrite = ServerResponse.prototype.write;
     vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
       this: ServerResponse,
       ...args: Parameters<ServerResponse["write"]>
@@ -379,7 +370,7 @@ describe("startDebugProxyServer", () => {
       }
       return accepted;
     });
-    const callEmit = originalMethod(ServerResponse.prototype, "emit");
+    const callEmit = ServerResponse.prototype.emit;
     vi.spyOn(ServerResponse.prototype, "emit").mockImplementation(function (
       this: ServerResponse,
       ...args: Parameters<ServerResponse["emit"]>
@@ -414,10 +405,7 @@ describe("startDebugProxyServer", () => {
     });
     expect(bytesReadWhileBackpressured).toBe(0);
     expect(drainStates.every((state) => state.pausedBefore && !state.pausedAfter)).toBe(true);
-    await proxy.stop();
-    const captureEvents = (await readCaptureEvents(settings.sessionId, 20)).filter(
-      (event) => event.path === "/capture",
-    );
+    const captureEvents = (await captured()).filter((event) => event.path === "/capture");
     expect(captureEvents.filter((event) => event.kind === "error")).toEqual([]);
     expect(captureEvents.filter((event) => event.kind === "response")).toEqual([
       expect.objectContaining({ direction: "inbound", status: 200 }),
@@ -429,10 +417,10 @@ describe("startDebugProxyServer", () => {
     async (abortWithReset) => {
       const responseBodyBytes = 16 * 1024 * 1024;
       const origin = await startStreamingProxyOrigin(responseBodyBytes);
-      const { settings, proxy } = await startProxy();
+      const { proxy, events, captured } = await startProxy();
 
       // Start the async reader before the bounded abort assertions measure cleanup.
-      await readCaptureEvents(settings.sessionId, 20);
+      await events();
       const aborted = await getThroughProxy(proxy.proxyUrl, `${origin.url}/capture`, undefined, {
         streaming: true,
         abortAfterBytes: 64 * 1024,
@@ -446,14 +434,12 @@ describe("startDebugProxyServer", () => {
       expect(aborted.bodyBytes).toBeGreaterThanOrEqual(64 * 1024);
 
       await origin.responseClosed;
-      expect(origin.state.closedResponses).toBe(1);
-      expect(origin.state.finishedResponses).toBe(0);
+      expect(origin.state).toEqual({ closedResponses: 1, finishedResponses: 0 });
 
       const healthy = await getThroughProxy(proxy.proxyUrl, `${origin.url}/healthy`);
       expect(healthy).toMatchObject({ body: "ok", complete: true, statusCode: 200 });
-      await proxy.stop();
-      const events = await readCaptureEvents(settings.sessionId, 20);
-      const captureEvents = events.filter((event) => event.path === "/capture");
+      const recorded = await captured();
+      const captureEvents = recorded.filter((event) => event.path === "/capture");
       const capturedRequest = captureEvents.find((event) => event.kind === "request");
       expect(capturedRequest).toBeDefined();
       expect(captureEvents.filter((event) => event.kind === "error")).toEqual([
@@ -466,9 +452,9 @@ describe("startDebugProxyServer", () => {
         }),
       ]);
       expect(captureEvents.filter((event) => event.kind === "response")).toEqual([]);
-      expect(events.filter((event) => event.path === "/healthy" && event.kind === "error")).toEqual(
-        [],
-      );
+      expect(
+        recorded.filter((event) => event.path === "/healthy" && event.kind === "error"),
+      ).toEqual([]);
     },
   );
 
@@ -489,7 +475,7 @@ describe("startDebugProxyServer", () => {
     },
   ])("survives an upstream failure $path", async ({ path, direction, ...expected }) => {
     const origin = await startResponseErrorOrigin();
-    const { settings, proxy } = await startProxy();
+    const { proxy, captured } = await startProxy();
 
     const failed = await getThroughProxy(proxy.proxyUrl, `${origin.url}/${path}`);
     expect(failed).toMatchObject(expected);
@@ -499,14 +485,11 @@ describe("startDebugProxyServer", () => {
 
     const healthy = await getThroughProxy(proxy.proxyUrl, `${origin.url}/healthy`);
     expect(healthy).toMatchObject({ body: "ok", complete: true, statusCode: 200 });
-    await proxy.stop();
-    expect(await readCaptureEvents(settings.sessionId, 20)).toContainEqual(
-      expect.objectContaining({ direction, kind: "error" }),
-    );
+    expect(await captured()).toContainEqual(expect.objectContaining({ direction, kind: "error" }));
   });
 
   it("returns 504 when a CONNECT upstream opening attempt times out", async () => {
-    const { settings, proxy, upstream, client, connected, openingTimeout } =
+    const { captured, upstream, client, connected, openingTimeout } =
       await startConnectProxy("unreachable.example:443");
     let response = "";
     client.setEncoding("utf8");
@@ -528,8 +511,7 @@ describe("startDebugProxyServer", () => {
     expect(response).toContain("504 Gateway Timeout");
     expect(response).toContain("Gateway Timeout\n");
     expect(upstream.destroyed).toBe(true);
-    await proxy.stop();
-    expect(await readCaptureEvents(settings.sessionId, 10)).toContainEqual(
+    expect(await captured()).toContainEqual(
       expect.objectContaining({
         direction: "local",
         errorText: "CONNECT upstream opening timed out after 30000ms of inactivity",
@@ -597,35 +579,41 @@ async function startCanaryOrigin() {
 }
 
 describe("debug proxy managed-proxy direct upstream policy", () => {
-  const startManagedProxy = async () => (await startProxy()).proxy;
-  let origin: Awaited<ReturnType<typeof startCanaryOrigin>>;
+  function expectForbidden(response: string) {
+    expect(response).toContain("403 Forbidden");
+    expect(response).toContain("Connection: close");
+    expect(response).toContain("Debug proxy direct upstream forwarding is disabled");
+  }
 
   beforeEach(() => {
     vi.stubEnv("OPENCLAW_PROXY_ACTIVE", undefined);
     vi.stubEnv("OPENCLAW_DEBUG_PROXY_ALLOW_DIRECT_CONNECT_WITH_MANAGED_PROXY", undefined);
   });
 
-  it("allows HTTP upstreams with the explicit diagnostic override", async () => {
-    process.env["OPENCLAW_PROXY_ACTIVE"] = "1";
-    process.env["OPENCLAW_DEBUG_PROXY_ALLOW_DIRECT_CONNECT_WITH_MANAGED_PROXY"] = "1";
-    origin = await startCanaryOrigin();
-    const server = await startManagedProxy();
-    const response = await requestThroughProxy(server.proxyUrl, origin.url);
-
-    expect(response).toContain("200 OK");
-    expect(response).toContain("ok");
-    expect(origin.requestCount()).toBe(1);
+  it.each([false, true])("gates direct HTTP upstreams on diagnostic override=%s", async (allow) => {
+    vi.stubEnv("OPENCLAW_PROXY_ACTIVE", "1");
+    if (allow) {
+      vi.stubEnv("OPENCLAW_DEBUG_PROXY_ALLOW_DIRECT_CONNECT_WITH_MANAGED_PROXY", "1");
+    }
+    const origin = await startCanaryOrigin();
+    const { proxy } = await startProxy();
+    const response = await requestThroughProxy(proxy.proxyUrl, origin.url);
+    if (allow) {
+      expect(response).toContain("200 OK");
+      expect(response).toContain("ok");
+    } else {
+      expectForbidden(response);
+    }
+    expect(origin.requestCount()).toBe(allow ? 1 : 0);
   });
 
   it.each(["example.com:443", "[::1]:8443"])(
     "rejects CONNECT to %s under managed proxy policy after parsing the target",
     async (target) => {
       process.env["OPENCLAW_PROXY_ACTIVE"] = "true";
-      const server = await startManagedProxy();
-      const response = await connectThroughProxy(server.proxyUrl, target);
-      expect(response).toContain("403 Forbidden");
-      expect(response).toContain("Connection: close");
-      expect(response).toContain("Debug proxy direct upstream forwarding is disabled");
+      const { proxy } = await startProxy();
+      const response = await connectThroughProxy(proxy.proxyUrl, target);
+      expectForbidden(response);
       expect(response).not.toContain("400 Bad Request");
     },
   );
@@ -633,29 +621,17 @@ describe("debug proxy managed-proxy direct upstream policy", () => {
   it.each(["[::1]:99999", "api.openai.com:1e3", "api.openai.com:0x50"])(
     "rejects invalid CONNECT target %s",
     async (connectTarget) => {
-      const server = await startManagedProxy();
-      const response = await connectThroughProxy(server.proxyUrl, connectTarget);
+      const { proxy } = await startProxy();
+      const response = await connectThroughProxy(proxy.proxyUrl, connectTarget);
 
       expect(response).toContain("400 Bad Request");
     },
   );
 
-  it("rejects absolute-form HTTP proxy requests before opening direct upstreams while managed proxy mode is active", async () => {
-    process.env["OPENCLAW_PROXY_ACTIVE"] = "1";
-    origin = await startCanaryOrigin();
-    const server = await startManagedProxy();
-    const response = await requestThroughProxy(server.proxyUrl, origin.url);
-
-    expect(response).toContain("403 Forbidden");
-    expect(response).toContain("Connection: close");
-    expect(response).toContain("Debug proxy direct upstream forwarding is disabled");
-    expect(origin.requestCount()).toBe(0);
-  });
-
   it("rejects malformed relative-form HTTP proxy targets before upstream handling", async () => {
-    const server = await startManagedProxy();
+    const { proxy } = await startProxy();
     const response = await requestRawThroughProxy(
-      server.proxyUrl,
+      proxy.proxyUrl,
       "GET /capture HTTP/1.1\r\nHost: [\r\nConnection: close\r\n\r\n",
     );
 
