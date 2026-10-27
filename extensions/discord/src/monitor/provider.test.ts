@@ -61,40 +61,21 @@ function mockLog(mock: unknown): string {
 }
 
 describe("monitorDiscordProvider", () => {
-  type ReconcileHealthProbeParams = {
-    cfg: OpenClawConfig;
-    accountId: string;
-    sessionKey: string;
-    binding: unknown;
-    session: unknown;
-  };
-
-  type ReconcileStartupParams = {
-    cfg: OpenClawConfig;
-    healthProbe?: (
-      params: ReconcileHealthProbeParams,
-    ) => Promise<{ status: string; reason?: string }>;
-  };
-
-  const getHealthProbe = () => {
-    expect(reconcileAcpThreadBindingsOnStartupMock).toHaveBeenCalledTimes(1);
-    const reconcileParams = firstMockArg(
+  const probe = (name: string, state = "idle", lastActivityAt = Date.now()) => {
+    const { healthProbe } = firstMockArg(
       reconcileAcpThreadBindingsOnStartupMock,
       "ACP startup reconciliation",
-    ) as ReconcileStartupParams;
-    if (!reconcileParams?.healthProbe) {
-      throw new Error("healthProbe was not wired into ACP startup reconciliation");
-    }
-    return reconcileParams.healthProbe;
-  };
-  const probe = (name: string, state = "idle", lastActivityAt = Date.now()) =>
-    getHealthProbe()({
-      cfg: baseConfig(),
-      accountId: "default",
+    ) as {
+      healthProbe: (params: {
+        sessionKey: string;
+        session: { acp: { state: string; lastActivityAt: number } };
+      }) => Promise<{ status: string; reason?: string }>;
+    };
+    return healthProbe({
       sessionKey: `agent:test:acp:${name}`,
-      binding: {},
       session: { acp: { state, lastActivityAt } },
     });
+  };
   function configureAccount(
     config: NonNullable<OpenClawConfig["channels"]>["discord"] = {},
     token = "MTIz.abc.def",
@@ -120,6 +101,18 @@ describe("monitorDiscordProvider", () => {
     const gateway = { emitter: new EventEmitter(), disconnect: vi.fn(), isConnected };
     clientGetPluginMock.mockImplementation((name) => (name === "gateway" ? gateway : undefined));
     return gateway;
+  }
+  function pause() {
+    const entered = createDeferred<void>();
+    const ready = createDeferred<void>();
+    return {
+      entered: entered.promise,
+      release: ready.resolve,
+      wait: () => {
+        entered.resolve();
+        return ready.promise;
+      },
+    };
   }
 
   beforeAll(async () => {
@@ -174,30 +167,6 @@ describe("monitorDiscordProvider", () => {
     });
   }
 
-  it("awaits restored thread bindings before reconciliation and provider startup", async () => {
-    const ready = createDeferred<{ stop: ReturnType<typeof vi.fn> }>();
-    const entered = createDeferred<void>();
-    const manager = { stop: vi.fn() };
-    createThreadBindingManagerMock.mockImplementationOnce(() => {
-      entered.resolve();
-      return ready.promise;
-    });
-    const monitor = runProvider();
-    try {
-      await entered.promise;
-      expect(reconcileAcpThreadBindingsOnStartupMock).not.toHaveBeenCalled();
-      expect(monitorLifecycleMock).not.toHaveBeenCalled();
-    } finally {
-      ready.resolve(manager);
-      await monitor;
-    }
-    expect(monitorLifecycleMock).toHaveBeenCalledWith(
-      expect.objectContaining({ threadBindings: manager }),
-    );
-    expect(manager.stop).toHaveBeenCalledTimes(1);
-    expect(voiceRuntimeModuleLoadedMock).not.toHaveBeenCalled();
-  });
-
   it.each(["binding reconciliation", "interaction registration"] as const)(
     "stops thread bindings when %s fails before lifecycle begins",
     async (phase) => {
@@ -218,45 +187,56 @@ describe("monitorDiscordProvider", () => {
     },
   );
 
-  it.each(["binding restoration", "binding reconciliation"] as const)(
-    "stops acquired thread bindings without starting a client when cancelled during %s",
-    async (phase) => {
-      const ready = createDeferred<void>();
-      const entered = createDeferred<void>();
-      const controller = new AbortController();
-      const manager = { stop: vi.fn() };
-      createThreadBindingManagerMock.mockImplementationOnce(async () => {
-        if (phase === "binding restoration") {
-          entered.resolve();
-          await ready.promise;
-        }
-        return manager;
+  it.each([
+    ["binding restoration", false],
+    ["binding restoration", true],
+    ["binding reconciliation", true],
+  ] as const)("waits for %s before startup or cancellation (cancel=%s)", async (phase, cancel) => {
+    const gate = pause();
+    const controller = new AbortController();
+    const manager = { stop: vi.fn() };
+    createThreadBindingManagerMock.mockImplementationOnce(async () => {
+      if (phase === "binding restoration") {
+        await gate.wait();
+      }
+      return manager;
+    });
+    if (phase === "binding reconciliation") {
+      reconcileAcpThreadBindingsOnStartupMock.mockImplementationOnce(async () => {
+        await gate.wait();
+        return { checked: 0, removed: 0, staleSessionKeys: [] };
       });
-      if (phase === "binding reconciliation") {
-        reconcileAcpThreadBindingsOnStartupMock.mockImplementationOnce(async () => {
-          entered.resolve();
-          await ready.promise;
-          return { checked: 0, removed: 0, staleSessionKeys: [] };
-        });
-      }
-      const monitor = runProvider({ abortSignal: controller.signal });
-      try {
-        await entered.promise;
+    }
+    const monitor = runProvider({ abortSignal: controller.signal });
+    try {
+      await gate.entered;
+      if (cancel) {
         controller.abort();
-        expect(manager.stop).not.toHaveBeenCalled();
-        expect(clientConstructorOptionsMock).not.toHaveBeenCalled();
-      } finally {
-        ready.resolve();
-        await monitor;
       }
-      expect(manager.stop).toHaveBeenCalledTimes(1);
+      expect(manager.stop).not.toHaveBeenCalled();
       expect(clientConstructorOptionsMock).not.toHaveBeenCalled();
       expect(monitorLifecycleMock).not.toHaveBeenCalled();
       if (phase === "binding restoration") {
         expect(reconcileAcpThreadBindingsOnStartupMock).not.toHaveBeenCalled();
       }
-    },
-  );
+    } finally {
+      gate.release();
+      await monitor;
+    }
+    expect(manager.stop).toHaveBeenCalledTimes(1);
+    if (cancel) {
+      expect(clientConstructorOptionsMock).not.toHaveBeenCalled();
+      expect(monitorLifecycleMock).not.toHaveBeenCalled();
+      if (phase === "binding restoration") {
+        expect(reconcileAcpThreadBindingsOnStartupMock).not.toHaveBeenCalled();
+      }
+    } else {
+      expect(monitorLifecycleMock).toHaveBeenCalledWith(
+        expect.objectContaining({ threadBindings: manager }),
+      );
+      expect(voiceRuntimeModuleLoadedMock).not.toHaveBeenCalled();
+    }
+  });
 
   it("disconnects the shared gateway and keeps a late error guard when startup fails before lifecycle begins", async () => {
     const { disconnect, emitter } = installGateway();
@@ -275,15 +255,12 @@ describe("monitorDiscordProvider", () => {
   });
 
   it("joins listener and binding work when message-handler cleanup fails", async () => {
-    const ready = createDeferred<void>();
-    const entered = createDeferred<void>();
-    const bindingReady = createDeferred<void>();
-    const bindingEntered = createDeferred<void>();
+    const listener = pause();
+    const binding = pause();
     const failure = new Error("message-handler cleanup failed");
     const stop = vi.spyOn(DiscordGuildJoinIntroductionListener.prototype, "stop");
     stop.mockImplementationOnce(async function (this: DiscordGuildJoinIntroductionListener) {
-      entered.resolve();
-      await ready.promise;
+      await listener.wait();
       stop.mockRestore();
       await this.stop();
     });
@@ -297,45 +274,33 @@ describe("monitorDiscordProvider", () => {
         { deactivate },
       ),
     );
-    createThreadBindingManagerMock.mockReturnValueOnce({
-      stop: vi.fn(async () => {
-        bindingEntered.resolve();
-        await bindingReady.promise;
-      }),
-    });
+    createThreadBindingManagerMock.mockReturnValueOnce({ stop: vi.fn(binding.wait) });
     installGateway(true);
-    let settled = false;
+    const settled = vi.fn();
     const monitor = runProvider({
       setStatus: (patch) => {
         if (patch.connected) {
           throw new Error("status publication failed before lifecycle");
         }
       },
-    }).then(
-      () => {
-        settled = true;
-        return undefined;
-      },
-      (error: unknown) => {
-        settled = true;
-        return error;
-      },
-    );
+    })
+      .catch((error: unknown) => error)
+      .finally(settled);
     try {
-      await entered.promise;
+      await listener.entered;
       await Promise.resolve();
-      expect(settled).toBe(false);
-      ready.resolve();
+      expect(settled).not.toHaveBeenCalled();
+      listener.release();
       expect(
         await Promise.race([
-          bindingEntered.promise.then(() => "binding-stop"),
+          binding.entered.then(() => "binding-stop"),
           monitor.then(() => "completed"),
         ]),
       ).toBe("binding-stop");
-      expect(settled).toBe(false);
+      expect(settled).not.toHaveBeenCalled();
     } finally {
-      ready.resolve();
-      bindingReady.resolve();
+      listener.release();
+      binding.release();
       await monitor;
       stop.mockRestore();
     }
@@ -365,6 +330,7 @@ describe("monitorDiscordProvider", () => {
   );
 
   it("keeps voice-owned commands out of the generic native dispatcher", async () => {
+    const channelRuntime = createPluginRuntimeMock().channel;
     configureAccount({ voice: {} });
     const standard = { name: "normal", description: "Normal", acceptsArgs: false };
     listNativeCommandSpecsForConfigMock.mockReturnValue([
@@ -373,10 +339,14 @@ describe("monitorDiscordProvider", () => {
     ]);
     const createVoiceCommand = vi.spyOn(voiceCommands, "createDiscordVoiceCommand");
     try {
-      await runProvider();
+      await runProvider({ channelRuntime });
       expect(voiceRuntimeModuleLoadedMock).toHaveBeenCalledTimes(1);
       expect(createDiscordNativeCommandMock).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ command: standard }),
+        expect.objectContaining({
+          command: standard,
+          dispatchReplyFromConfig: channelRuntime.reply.dispatchReplyFromConfig,
+          buildContext: channelRuntime.inbound.buildContext,
+        }),
       );
       expect(createVoiceCommand).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ accountId: "default", getManager: expect.any(Function) }),
@@ -384,17 +354,6 @@ describe("monitorDiscordProvider", () => {
     } finally {
       createVoiceCommand.mockRestore();
     }
-  });
-
-  it("binds native slash commands to the owning Gateway dispatcher", async () => {
-    const channelRuntime = createPluginRuntimeMock().channel;
-    await runProvider({ channelRuntime });
-    expect(createDiscordNativeCommandMock).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        dispatchReplyFromConfig: channelRuntime.reply.dispatchReplyFromConfig,
-        buildContext: channelRuntime.inbound.buildContext,
-      }),
-    );
   });
 
   it("registers the native approval runtime context when exec approvals are enabled", async () => {
@@ -601,18 +560,7 @@ describe("monitorDiscordProvider", () => {
       status: 400,
       discordCode: 50035,
       rawBody: {
-        code: 50035,
-        message: "Invalid Form Body",
-        errors: Object.fromEntries(
-          [63, 65, 66, 67].map((index) => [
-            index,
-            {
-              description: {
-                _errors: [{ code: "BASE_TYPE_MAX_LENGTH", message: "Must be 100 or fewer." }],
-              },
-            },
-          ]),
-        ),
+        errors: Object.fromEntries([63, 65, 66, 67].map((index) => [index, { description: {} }])),
       },
       deployRequestBody: Array.from({ length: 68 }, (_entry, index) => ({
         name: `command-${index}`,
@@ -620,9 +568,7 @@ describe("monitorDiscordProvider", () => {
       })),
     });
 
-    expect(details).toContain("status=400");
-    expect(details).toContain("code=50035");
-    expect(details).toContain("body=");
+    expect(details).toContain("status=400, code=50035, body=");
     expect(details).toContain("rejected=");
     for (const index of [63, 65, 66]) {
       expect(details).toContain(
