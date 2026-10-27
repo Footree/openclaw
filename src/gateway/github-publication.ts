@@ -319,16 +319,9 @@ export function createGitHubPublicationCoordinator(params: {
           });
           try {
             assertOwned();
-            if (recoveryResult) {
-              if (!validateCustody()) {
-                throw new GitHubPublicationAuthorityLostError(
-                  "GitHub publication recovery custody changed.",
-                );
-              }
-              return publicationResult(await executionStore.complete(claimed, recoveryResult));
-            }
             return await executeGitHubPublication({
               initial: claimed,
+              recoveryResult,
               requester: getRequester,
               requesterProfileId: () => {
                 const actor = getRequester().snapshot.actor;

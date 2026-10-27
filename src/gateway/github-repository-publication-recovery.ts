@@ -274,6 +274,10 @@ export function createRepositoryGitHubPublicationRecovery(params: {
                   await failStaleRepositoryGitHubPublicationAsync(row, params.assertCurrent);
                   return undefined;
                 }
+                if (!row.checkpoint_ref && !owner.workspace.checkpointRef) {
+                  // Waiting for accepted work is not a failed publication attempt.
+                  return undefined;
+                }
                 return await params.execute(row, assertCurrent);
               };
               return params.recovery

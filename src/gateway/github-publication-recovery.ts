@@ -10,12 +10,18 @@ import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-rea
 import { readLocalGitHubPublicationWorktreeOwner } from "./github-publication-availability.js";
 import {
   createGitHubPublicationExecutionIdentity,
+  GitHubPublicationAuthorityLostError,
   type GitHubPublicationIdentityOwner,
 } from "./github-publication-execution-identity.js";
 import {
   GitHubPublicationRecoveryPendingError,
   recoverGitHubPublicationBranchAndIndex,
 } from "./github-publication-git-index.js";
+import {
+  assertSafeGitPublicationWorkspace,
+  createGitHubPublicationCommandRunner,
+  runPublicationCommand,
+} from "./github-publication-git-transport.js";
 import { reconcileGitHubPublicationPullRequest } from "./github-publication-pull-requests.js";
 import { projectGitHubPublicationResult } from "./github-publication-receipt.js";
 import { prepareGitHubPublicationTarget } from "./github-publication-target.js";
@@ -110,7 +116,50 @@ export function createGitHubPublicationRecoveryBackoff() {
   };
 }
 
-export async function recoverGitHubPublicationWorkspace(
+/** Workspace cleanup precedes every recovered settlement, even without publish authority. */
+export async function prepareGitHubPublicationWorkspaceRecovery<
+  Row extends GitHubPublicationExecutionRow,
+>(params: {
+  initial: Row;
+  validateCustody: () => boolean;
+  recoveryResult?: SessionGitHubPublicationResult;
+  complete: (row: Row, result: SessionGitHubPublicationResult) => Row | Promise<Row>;
+}) {
+  const owner = await readLocalGitHubPublicationWorktreeOwner(params.initial);
+  const assertCustody = () => {
+    if (!params.validateCustody()) {
+      throw new GitHubPublicationAuthorityLostError(
+        "GitHub publication execution custody changed.",
+      );
+    }
+    owner.assertCurrent();
+  };
+  const commands = createGitHubPublicationCommandRunner(assertCustody);
+  try {
+    await commands.step(() =>
+      assertSafeGitPublicationWorkspace(owner.worktree.path, runPublicationCommand),
+    );
+    await recoverGitHubPublicationWorkspace(
+      params.initial,
+      owner.worktree,
+      commands.require,
+      assertCustody,
+    );
+    let recoveryResult: SessionGitHubPublicationResult | undefined;
+    if (params.recoveryResult) {
+      assertCustody();
+      recoveryResult = projectGitHubPublicationResult(
+        await params.complete(params.initial, params.recoveryResult),
+      );
+    }
+    return { ...owner, recoveryResult };
+  } catch (error) {
+    owner.release();
+    throw error;
+  }
+}
+
+async function recoverGitHubPublicationWorkspace(
   row: GitHubPublicationExecutionRow,
   worktree: ManagedWorktreeRecord,
   run: Parameters<typeof recoverGitHubPublicationBranchAndIndex>[0]["run"],

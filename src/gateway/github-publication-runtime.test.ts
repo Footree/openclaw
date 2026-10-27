@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withEngineStoreAdmission } from "../infra/database-engine/admission-scope.js";
 import {
@@ -26,6 +28,7 @@ import {
   SESSION_KEY,
   WORKSPACE_TREE,
   createTestGitHubPublicationRuntime,
+  createRealPublicationWorkspace,
   commandResult,
   githubPublicationTestMocks,
   installGitHubPublicationTestHarness,
@@ -212,6 +215,54 @@ function installPublicationRecoveryTests(engine: "sqlite" | "postgres") {
     expect(
       transport.mock.calls.filter(([argv]) => argv.includes("push") || argv.includes("POST")),
     ).toEqual([]);
+  });
+
+  it("finishes retained index cleanup before terminal settlement and permits later Git writes", async () => {
+    const local = await createRealPublicationWorkspace("index");
+    const runtime = createRecoveryRuntime();
+    const idempotencyKey = "retained-index";
+    await expect(
+      runtime.coordinator.requestForSessionV2(publicationRequest(idempotencyKey)),
+    ).rejects.toThrow("workspace recovery is pending");
+    const receipt = await publicationStore.readGitHubPublicationRequestAsync({
+      sessionId: SESSION_ID,
+      idempotencyKey,
+    });
+    const index = path.resolve(local.cwd, await local.git("rev-parse", "--git-path", "index"));
+    const transport = githubPublicationTestMocks().runCommand;
+    const original = transport.getMockImplementation()!;
+    let unavailable = true;
+    transport.mockImplementation(async (argv: string[], ...args: unknown[]) =>
+      unavailable && argv.includes("--git-path") && argv.includes("index")
+        ? commandResult("", 1)
+        : original(argv, ...args),
+    );
+    let now = performance.now();
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    for (const waitMs of [0, 60_000, 120_000]) {
+      now += waitMs;
+      await runtime.reconcilePublications();
+    }
+    expect(await runtime.coordinator.readAsync(receipt!.request_id)).toMatchObject({
+      status: "publishing",
+    });
+    await expect(fs.stat(`${index}.lock`)).resolves.toBeDefined();
+    await expect(local.git("add", "artifact.txt")).rejects.toThrow("index.lock");
+
+    unavailable = false;
+    now += 240_000;
+    await runtime.reconcilePublications();
+    expect(await runtime.coordinator.readAsync(receipt!.request_id)).toMatchObject({
+      status: "failed",
+      code: "unavailable",
+    });
+    await expect(fs.stat(`${index}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await local.git("write-tree")).toBe(await local.git("rev-parse", "HEAD^{tree}"));
+    await local.git("add", "artifact.txt");
+    expect(local.effects).toEqual([]);
+    expect(
+      await runtime.coordinator.requestForSessionV2(publicationRequest("after-index-cleanup")),
+    ).toMatchObject({ status: "published" });
   });
 
   it("reads each pending queue once during empty startup and still reads unreported results", async () => {

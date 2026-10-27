@@ -355,6 +355,38 @@ it("settles unreadable repository publication without replaying its dispatched p
   expect(f.runtime.effects).toEqual(["push"]);
 });
 
+it("keeps waiting for the first accepted checkpoint without exhausting recovery", async () => {
+  const f = await repositoryFixture(undefined, undefined, {}, false);
+  const first = await f.publish("waiting-for-checkpoint");
+  expect(first.status).toBe("requested");
+  let now = performance.now();
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+  onTestFinished(() => clock.mockRestore());
+  const coordinator = createTestGitHubPublicationCoordinator({
+    placements: f.placements,
+    recovery: {
+      shared: createGitHubPublicationRecoveryBackoff(),
+      repository: createGitHubPublicationRecoveryBackoff(),
+    },
+  });
+  for (const waitMs of [0, 60_000, 120_000, 3_600_000]) {
+    now += waitMs;
+    await coordinator.resumeSessionRequests();
+  }
+  expect(readReceipt(first.requestId)).toMatchObject({
+    status: "requested",
+    checkpoint_ref: null,
+    last_effect: null,
+  });
+  expect(f.runtime.effects).toEqual([]);
+  await f.capture("first accepted checkpoint\n", "ready");
+  await coordinator.resumeSessionRequests();
+  expect(await coordinator.readAsync(first.requestId)).toMatchObject({
+    status: "published",
+    url,
+  });
+});
+
 it("records a recovered push response even when authority closes during its observation", async () => {
   const f = await repositoryFixture();
   f.runtime.interruptPush = true;
