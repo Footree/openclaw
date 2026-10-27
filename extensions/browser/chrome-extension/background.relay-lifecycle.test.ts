@@ -125,13 +125,13 @@ async function fixture(initiallyAttached = false) {
   return { h, old, ...native, replacement: () => replacementSocket(h), attach };
 }
 const { deferred, releaseAll } = deferredScope();
-function heldAccess(h: Awaited<ReturnType<typeof loadBackground>>) {
+function heldAccess(h: Background) {
   const gate = deferred(undefined);
   h.tabsGet.mockClear();
   holdNext(h.tabsGet, gate.promise);
   return gate;
 }
-function heldFocus(h: Awaited<ReturnType<typeof loadBackground>>) {
+function heldFocus(h: Background) {
   const gate = deferred(undefined);
   h.windowsUpdate.mockImplementationOnce(async () => {
     await gate.promise;
@@ -449,9 +449,7 @@ it("rolls back only its created tab after socket close during focus", async () =
 async function expectPending(promise: Promise<unknown>) {
   const settled = vi.fn();
   void promise.then(settled);
-  await new Promise<void>((resolve) => {
-    setImmediate(resolve);
-  });
+  await flush();
   expect(settled).not.toHaveBeenCalled();
 }
 async function nativeFixture() {

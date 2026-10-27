@@ -36,6 +36,8 @@ function createdProperties(h: Harness, properties: Record<string, unknown>) {
     Object.assign(await create(params), properties),
   );
 }
+const setAccess = (h: Harness, grant: boolean, accessMode = "selected") =>
+  runtime(h, "toggleTabAccess", { tabId: 101, accessMode, grant });
 async function heldCreation(h: Harness, stage: "attach" | "group" = "attach") {
   const completion = deferred(undefined);
   const mock = stage === "attach" ? h.debuggerAttach : h.tabGroupsUpdate;
@@ -255,7 +257,7 @@ describe("created initial target in selected mode", () => {
     }
     const creating = await heldCreation(h, revoked ? "group" : "attach");
     if (revoked) {
-      await runtime(h, "toggleTabAccess", { tabId: 101, accessMode: mode, grant: false });
+      await setAccess(h, false, mode);
     }
     h.tabGroupUpdatedListener?.({ id: 7, title: "OpenClaw" });
     creating.finish();
@@ -269,9 +271,7 @@ describe("created initial target in selected mode", () => {
     const h = await createHarness(mode);
     await h.command(createTab());
     for (const grant of [false, true]) {
-      expect(
-        await runtime(h, "toggleTabAccess", { tabId: 101, accessMode: mode, grant }),
-      ).toMatchObject({ ok: true, accessible: grant });
+      expect(await setAccess(h, grant, mode)).toMatchObject({ ok: true, accessible: grant });
       expectType(await h.command({ type: "attach", tabId: 101 }), grant ? "result" : "error");
     }
   });
@@ -282,7 +282,7 @@ describe("created initial target in selected mode", () => {
       const creating = await heldCreation(h);
       let mutation: Promise<unknown> | undefined;
       if (revocation === "pause") {
-        mutation = runtime(h, "toggleTabAccess", { tabId: 101, accessMode: mode, grant: false });
+        mutation = setAccess(h, false, mode);
         await vi.waitFor(async () =>
           expect(await runtime(h, "getTabAccess", { tabId: 101 })).toMatchObject({
             accessible: false,
@@ -396,10 +396,7 @@ describe("physical tab creation authority", () => {
       }
       return tab;
     });
-    expect(await h.command(createTab("https://example.com/destination"))).toMatchObject({
-      type: "error",
-      message: "created tab is no longer available",
-    });
+    expectError(await h.command(createTab(url)), "created tab is no longer available");
     expectUnused(h.debuggerAttach, h.tabsRemove);
   });
   it.each(["initial loading snapshot", "same-group update"] as const)(
@@ -496,7 +493,7 @@ describe("physical tab creation authority", () => {
       if (reason === "removed") {
         h.tabsRemovedListener?.(101);
       } else {
-        pausing = runtime(h, "toggleTabAccess", { accessMode: "all", tabId: 101, grant: false });
+        pausing = setAccess(h, false, "all");
         await vi.waitFor(() => expect(h.sessionStorageValues.deniedTabIdsV1).toEqual([101]));
       }
       lookup.resolve(await h.tabsGet(101));
@@ -507,8 +504,7 @@ describe("physical tab creation authority", () => {
   );
   it("fences a selected revoke while grouping and leaves the user tab alone", async () => {
     const h = await createHarness("selected");
-    const pendingGroup = createDeferred<number>();
-    releases.push(() => pendingGroup.resolve(7));
+    const pendingGroup = deferred(7);
     const group = h.tabsGroup.getMockImplementation()!;
     h.tabsGroup.mockImplementationOnce(async (properties) => {
       await group(properties);
@@ -516,9 +512,7 @@ describe("physical tab creation authority", () => {
     });
     const creating = h.command({ ...createTab(), focus: true });
     await waitCalled(h.tabsGroup);
-    expect(
-      await runtime(h, "toggleTabAccess", { accessMode: "selected", tabId: 101, grant: false }),
-    ).toMatchObject({ ok: true });
+    expect(await setAccess(h, false)).toMatchObject({ ok: true });
     pendingGroup.resolve(7);
     expectError(await creating, expect.stringMatching(/revoked/));
     expectUnused(h.windowsUpdate, h.tabsRemove);
@@ -556,9 +550,9 @@ async function setupTarget(operation = continueRequest) {
     bridge.dispose();
   });
   for (const client of [owner, observer]) {
-    expect(
+    expectCdpResult(
       await client.request("Target.setAutoAttach", { autoAttach: true, flatten: true }),
-    ).toMatchObject({ result: {} });
+    );
   }
   expect(await owner.requestResult("Target.createTarget", { url: "about:blank" })).toEqual({
     targetId,
@@ -573,9 +567,7 @@ async function setupTarget(operation = continueRequest) {
 async function setup(operation = continueRequest) {
   const rig = await setupTarget(operation);
   const { harness, owner, observer, session, observerSession, target } = rig;
-  expect(await owner.request("Fetch.enable", { handleAuthRequests: true }, session)).toMatchObject({
-    result: {},
-  });
+  expectCdpResult(await owner.request("Fetch.enable", { handleAuthRequests: true }, session));
   const event = operation.stage === "auth" ? "Fetch.authRequired" : "Fetch.requestPaused";
   harness.debuggerEventListener?.({ tabId: 101 }, event, {
     requestId: "native-navigation-request",
@@ -587,9 +579,7 @@ async function setup(operation = continueRequest) {
   expect(observer.events(event)).toEqual([]);
   const params: Record<string, unknown> = { ...operation.params, requestId };
   const beforeForeign = harness.debuggerSendCommand.mock.calls.length;
-  expect(await observer.request(operation.method, params, observerSession)).toMatchObject({
-    error: { message: expect.stringContaining("another session") },
-  });
+  expectCdpError(await observer.request(operation.method, params, observerSession));
   expect(harness.debuggerSendCommand.mock.calls).toHaveLength(beforeForeign);
   expect(target()).toBe(targetId);
   return { ...rig, params };
@@ -598,7 +588,7 @@ async function setup(operation = continueRequest) {
 async function setupConfiguration(method: string) {
   const rig = await setupTarget({ method });
   if (method === "Fetch.disable") {
-    expect(await rig.owner.request("Fetch.enable", {}, rig.session)).toMatchObject({ result: {} });
+    expectCdpResult(await rig.owner.request("Fetch.enable", {}, rig.session));
   }
   return { ...rig, params: {} };
 }
@@ -645,6 +635,9 @@ function nativeCalls(rig: Awaited<ReturnType<typeof setup>>) {
     ([, method]) => method === rig.operation.method,
   );
 }
+const expectCdpResult = (response: Frame) => expect(response).toMatchObject({ result: {} });
+const expectCdpError = (response: Frame, message = "another session") =>
+  expect(response).toMatchObject({ error: { message: expect.stringContaining(message) } });
 
 async function assertReceiptAndContinuity(rig: Awaited<ReturnType<typeof setup>>, response: Frame) {
   expect.soft(response).toMatchObject({ result: {} });
@@ -692,9 +685,7 @@ describe("tab-scoped relay completions", () => {
     expect(response).toMatchObject({
       result: { stream: expect.stringMatching(/^openclaw-fetch-stream:/) },
     });
-    expect(await rig.owner.request("Fetch.disable", {}, rig.session)).toMatchObject({
-      error: { message: expect.stringContaining("streamed responses") },
-    });
+    expectCdpError(await rig.owner.request("Fetch.disable", {}, rig.session), "streamed responses");
     expect(
       rig.harness.debuggerSendCommand.mock.calls.filter(([, method]) => method === "Fetch.disable"),
     ).toHaveLength(0);
@@ -759,9 +750,7 @@ describe("tab-scoped relay completions", () => {
     async ({ method, order }) => {
       const rig = await setupConfiguration(method);
       await completeAcrossCommit(rig, order, async () => {
-        expect(await rig.observer.request("Fetch.enable", {}, rig.observerSession)).toMatchObject({
-          error: { message: expect.stringContaining("another session") },
-        });
+        expectCdpError(await rig.observer.request("Fetch.enable", {}, rig.observerSession));
         expect(nativeCalls(rig)).toHaveLength(1);
       });
       const successor = await rig.observer.request("Fetch.enable", {}, rig.observerSession);
@@ -788,11 +777,7 @@ describe("tab-scoped relay completions", () => {
     const held = await holdNativeCompletion(rig);
     switch (revocation) {
       case "access":
-        await runtime(rig.harness, "toggleTabAccess", {
-          tabId: 101,
-          accessMode: "selected",
-          grant: false,
-        });
+        await setAccess(rig.harness, false);
         break;
       case "document":
         commitAllowed(rig.harness);
