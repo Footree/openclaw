@@ -1,9 +1,8 @@
-import http from "node:http";
-import { HTTPFetchError } from "@line/bot-sdk";
+import { HTTPFetchError, type messagingApi } from "@line/bot-sdk";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
+import { withServer } from "openclaw/plugin-sdk/test-env";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { listenOnLoopback } from "../../test-support/hanging-loopback-server.js";
 import { cancelTrackedTextResponse as createTrackedResponse } from "../../test-support/streaming-error-response.js";
 
 const realGlobalFetch = globalThis.fetch.bind(globalThis);
@@ -116,6 +115,22 @@ const video = {
   altContent: { type: "image", url: "https://e.example/preview.jpg", size: "full" },
 };
 
+// Capture the wire payload once; SDK response mocks do not normalize it for us.
+function pushedMessage() {
+  return expectDefined(
+    pushMessageMock.mock.calls[0]?.[0]?.messages[0],
+    "LINE push message",
+  ) as messagingApi.Message;
+}
+
+async function sendBoth(message: messagingApi.Message) {
+  await sendModule.pushMessagesLine("U123", [message], options);
+  await sendModule.replyMessageLine("reply-token", [message], options);
+  expect(pushMessageMock.mock.calls[0]?.[0]?.messages).toEqual(
+    replyMessageMock.mock.calls[0]?.[0]?.messages,
+  );
+}
+
 describe("LINE send helpers", () => {
   const fixedSentAt = 1_800_000_000_000;
   function expectedMediaSendResult(chatId: string, messageIds: string[], messageCount: number) {
@@ -185,21 +200,19 @@ describe("LINE send helpers", () => {
 
   beforeEach(() => {
     vi.setSystemTime(fixedSentAt);
-    pushMessageMock.mockReset();
-    replyMessageMock.mockReset();
-    lineFetchMock.mockReset();
-    showLoadingAnimationMock.mockReset();
-    getProfileMock.mockReset();
-    getGroupMemberProfileMock.mockReset();
-    getRoomMemberProfileMock.mockReset();
-    getGroupSummaryMock.mockReset();
-    MessagingApiClientMock.mockReset();
+    for (const mock of [
+      ...Object.values(mockClient),
+      lineFetchMock,
+      MessagingApiClientMock,
+      resolveLineAccountMock,
+      resolveLineChannelAccessTokenMock,
+      recordChannelActivityMock,
+      logVerboseMock,
+      resolvePinnedHostnameWithPolicyMock,
+    ]) {
+      mock.mockReset();
+    }
     requireRuntimeConfigMock.mockClear();
-    resolveLineAccountMock.mockReset();
-    resolveLineChannelAccessTokenMock.mockReset();
-    recordChannelActivityMock.mockReset();
-    logVerboseMock.mockReset();
-    resolvePinnedHostnameWithPolicyMock.mockReset();
 
     MessagingApiClientMock.mockImplementation(function () {
       return mockClient;
@@ -280,20 +293,8 @@ describe("LINE send helpers", () => {
       },
     };
 
-    await sendModule.pushMessagesLine("U123", [message] as never, options);
-    await sendModule.replyMessageLine("reply-token", [message] as never, {
-      cfg: LINE_TEST_CFG,
-    });
-
-    const pushed = pushMessageMock.mock.calls[0]?.[0] as {
-      messages: Array<{ contents: Record<string, unknown> }>;
-    };
-    const replied = replyMessageMock.mock.calls[0]?.[0] as {
-      messages: Array<{ contents: Record<string, unknown> }>;
-    };
-    expect(pushed.messages[0]?.contents).toEqual(replied.messages[0]?.contents);
-
-    const contents = pushed.messages[0]?.contents as {
+    await sendBoth(message as never);
+    const contents = (pushedMessage() as messagingApi.FlexMessage).contents as {
       action?: unknown;
       hero: { type: string; action?: unknown };
       body: { action?: unknown; contents: Array<{ action?: unknown; text?: string }> };
@@ -348,32 +349,24 @@ describe("LINE send helpers", () => {
       },
     });
 
-    await sendModule.pushMessagesLine("U123", [message] as never, options);
-    await sendModule.replyMessageLine("reply-token", [message] as never, options);
-
-    const pushed = pushMessageMock.mock.calls[0]?.[0] as {
-      messages: Array<{ actions: unknown[]; video?: { externalLink?: unknown } }>;
-    };
-    const replied = replyMessageMock.mock.calls[0]?.[0] as {
-      messages: Array<{ actions: unknown[] }>;
-    };
-    expect(pushed.messages[0]?.actions).toEqual(replied.messages[0]?.actions);
-    expect(pushed.messages[0]?.actions).toHaveLength(50);
-    expect(pushed.messages[0]?.actions[0]).toEqual({
+    await sendBoth(message as never);
+    const pushed = pushedMessage() as messagingApi.ImagemapMessage;
+    expect(pushed.actions).toHaveLength(50);
+    expect(pushed.actions[0]).toEqual({
       type: "message",
       label: "Unavailable",
       text: "Link unavailable: URL exceeds LINE's limit.",
       area,
     });
-    expect(pushed.messages[0]?.actions[1]).toMatchObject({
+    expect(pushed.actions[1]).toMatchObject({
       type: "message",
       text: "item-0",
     });
-    expect(pushed.messages[0]?.actions[49]).toMatchObject({
+    expect(pushed.actions[49]).toMatchObject({
       type: "message",
       text: "item-48",
     });
-    expect(pushed.messages[0]?.video?.externalLink).toBeUndefined();
+    expect(pushed.video?.externalLink).toBeUndefined();
     expect(message.actions[0]?.type).toBe("uri");
   });
 
@@ -387,17 +380,8 @@ describe("LINE send helpers", () => {
       ],
     });
 
-    await sendModule.pushMessagesLine("U123", [message] as never, options);
-    await sendModule.replyMessageLine("reply-token", [message] as never, options);
-
-    const pushed = pushMessageMock.mock.calls[0]?.[0] as {
-      messages: Array<{ actions: unknown[] }>;
-    };
-    const replied = replyMessageMock.mock.calls[0]?.[0] as {
-      messages: Array<{ actions: unknown[] }>;
-    };
-    expect(pushed.messages[0]?.actions).toEqual(replied.messages[0]?.actions);
-    expect(pushed.messages[0]?.actions).toEqual([
+    await sendBoth(message as never);
+    expect((pushedMessage() as messagingApi.ImagemapMessage).actions).toEqual([
       { type: "message", label: "Exact", text: exactText, area },
       {
         type: "message",
@@ -424,10 +408,9 @@ describe("LINE send helpers", () => {
 
     await sendModule.pushMessagesLine("U123", [message] as never, options);
 
-    const pushed = pushMessageMock.mock.calls[0]?.[0] as {
-      messages: Array<{ video: { externalLink: { label: string } } }>;
-    };
-    expect(pushed.messages[0]?.video.externalLink.label).toBe("😀".repeat(15));
+    expect((pushedMessage() as messagingApi.ImagemapMessage).video?.externalLink?.label).toBe(
+      "😀".repeat(15),
+    );
   });
 
   it("pushes images via normalized LINE target", async () => {
@@ -468,9 +451,7 @@ describe("LINE send helpers", () => {
     });
 
     const caught = await capturePartialDelivery(() =>
-      sendModule.replyMessageLine("reply-token", [{ type: "text", text: "Hello" }], {
-        cfg: LINE_TEST_CFG,
-      }),
+      sendModule.replyMessageLine("reply-token", [{ type: "text", text: "Hello" }], options),
     );
     expect(caught.deliveryResult).toEqual({
       messageIds: ["713452345678901234", "713452345678901235"],
@@ -612,16 +593,20 @@ describe("LINE send helpers", () => {
 
   it("preserves UTF-16 boundaries in invalid recipient diagnostics", async () => {
     await expect(
-      sendModule.pushMessagesLine(`aab😀${"x".repeat(40)}`, [{ type: "text", text: "hello" }], {
-        cfg: LINE_TEST_CFG,
-      }),
+      sendModule.pushMessagesLine(
+        `aab😀${"x".repeat(40)}`,
+        [{ type: "text", text: "hello" }],
+        options,
+      ),
     ).rejects.toThrow(
       "Recipient is not a valid LINE id (case-sensitive; expected leading capital C/U/R): aab…",
     );
     await expect(
-      sendModule.pushMessagesLine(`aa😀${"y".repeat(40)}`, [{ type: "text", text: "hello" }], {
-        cfg: LINE_TEST_CFG,
-      }),
+      sendModule.pushMessagesLine(
+        `aa😀${"y".repeat(40)}`,
+        [{ type: "text", text: "hello" }],
+        options,
+      ),
     ).rejects.toThrow(
       "Recipient is not a valid LINE id (case-sensitive; expected leading capital C/U/R): aa😀…",
     );
@@ -651,16 +636,11 @@ describe("LINE send helpers", () => {
     );
 
     expect(pushMessageMock).toHaveBeenCalledTimes(1);
-    const firstCall = pushMessageMock.mock.calls.at(0) as [
-      { messages: Array<{ quickReply?: { items: unknown[] } }> },
-    ];
-    const payload = expectDefined(firstCall[0], "LINE push payload");
-    expect(payload.messages[0]?.quickReply?.items[0]).toMatchObject({
+    const payload = pushedMessage();
+    expect(payload.quickReply?.items[0]).toMatchObject({
       action: { label, text: label },
     });
-    expect(expectDefined(payload.messages[0], "LINE push message").quickReply?.items).toHaveLength(
-      13,
-    );
+    expect(payload.quickReply?.items).toHaveLength(13);
   });
   it("degrades to no profile when LINE cannot answer", async () => {
     getGroupMemberProfileMock.mockRejectedValue(new Error("404 not found"));
@@ -782,40 +762,29 @@ describe("LINE send helpers", () => {
   it("masks a reflected Authorization token through a real HTTP reflector", async () => {
     const token = "line-channel-access-token-xyz0123456789abcdef";
     resolveLineChannelAccessTokenMock.mockReturnValue(token);
-    const server = http.createServer((req, res) => {
-      res.writeHead(400, { "Content-Type": "text/plain" });
-      res.end(
-        `proxy failure reflected Authorization: ${req.headers.authorization}; request rejected`,
-      );
-    });
-    const port = await listenOnLoopback(server);
-    try {
-      // The production send boundary targets the fixed LINE API host; route only the
-      // destination to the loopback reflector while the real fetch stack and the
-      // production response handling run unchanged.
-      lineFetchMock.mockImplementationOnce(
-        async (url: string | URL | Request, init?: RequestInit) => {
-          const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
-          return realGlobalFetch(
-            target.replace("https://api.line.me", `http://127.0.0.1:${port}`),
-            init,
-          );
-        },
-      );
-
-      const caught = await captureError(pushText);
-
-      expect(caught).toBeInstanceOf(HTTPFetchError);
-      const body = (caught as HTTPFetchError).body;
-      expect(body).toContain("proxy failure");
-      expect(body).toContain("request rejected");
-      expect(body).not.toContain(token);
-    } finally {
-      server.closeAllConnections?.();
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      });
-    }
+    await withServer(
+      (req, res) => {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end(
+          `proxy failure reflected Authorization: ${req.headers.authorization}; request rejected`,
+        );
+      },
+      async (origin) => {
+        // Redirect only the destination; keep the real fetch and response handling.
+        lineFetchMock.mockImplementationOnce(
+          async (url: string | URL | Request, init?: RequestInit) => {
+            const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+            return realGlobalFetch(target.replace("https://api.line.me", origin), init);
+          },
+        );
+        const caught = await captureError(pushText);
+        expect(caught).toBeInstanceOf(HTTPFetchError);
+        const body = (caught as HTTPFetchError).body;
+        expect(body).toContain("proxy failure");
+        expect(body).toContain("request rejected");
+        expect(body).not.toContain(token);
+      },
+    );
   });
 
   it("preserves reply rejection status when the LINE error body cannot be read", async () => {
@@ -831,9 +800,7 @@ describe("LINE send helpers", () => {
     lineFetchMock.mockResolvedValueOnce(response);
 
     const caught = await captureError(() =>
-      sendModule.replyMessageLine("reply-token", [{ type: "text", text: "Hello" }], {
-        cfg: LINE_TEST_CFG,
-      }),
+      sendModule.replyMessageLine("reply-token", [{ type: "text", text: "Hello" }], options),
     );
 
     expect(caught).toBeInstanceOf(HTTPFetchError);
