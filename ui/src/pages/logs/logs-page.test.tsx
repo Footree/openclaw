@@ -2,7 +2,7 @@
 
 import { getQueriesForElement } from "@solidjs/testing-library";
 import { createSignal, flush } from "solid-js";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
@@ -12,9 +12,13 @@ import { createApplicationGateway } from "../../test-helpers/application-context
 import { missingReadScopeErrorFixture } from "../../test-helpers/gateway-client.ts";
 import { cleanupSolid, mountSolid } from "../../test-helpers/mount-solid.ts";
 import { waitForSolid } from "../../test-helpers/solid-settle.ts";
+import { installLogsViewport } from "./logs-layout.test-support.ts";
 import { renderSolid as LogsRoute } from "./logs-page.tsx";
 
-vi.mock("../../lib/download.ts", () => ({ downloadTextFile: vi.fn() }));
+vi.mock("../../lib/download.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/download.ts")>()),
+  downloadTextFile: vi.fn(),
+}));
 
 type TestContext = ReturnType<typeof contextWithClient>;
 const TRUNCATION_NOTICE = "Log output truncated; showing latest chunk.";
@@ -113,6 +117,8 @@ async function poll() {
   await vi.advanceTimersByTimeAsync(2_000);
   await settle();
 }
+
+beforeEach(installLogsViewport);
 
 afterEach(() => {
   cleanupSolid();
@@ -382,5 +388,5 @@ it("forces a scroll when auto-follow is re-enabled away from the bottom", async 
   flush();
   expect(frames).toHaveLength(1);
   frames[0]!(0);
-  expect(stream.scrollTop).toBe(500);
+  expect(stream.scrollHeight - stream.clientHeight - stream.scrollTop).toBe(0);
 });

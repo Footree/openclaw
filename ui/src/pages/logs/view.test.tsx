@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n/index.ts";
 import { pt_BR } from "../../i18n/locales/pt-BR.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
+import { installLogsViewport } from "./logs-layout.test-support.ts";
 import { LogsView, type LogsProps } from "./view.tsx";
 
 const raw = '{"level":"info","message":"matched line"}';
@@ -34,19 +35,7 @@ function createProps(overrides: Partial<LogsProps> = {}): LogsProps {
   };
 }
 
-beforeEach(() => {
-  // Formatting tests need a measurable viewport, not simulated browser layout.
-  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (
-    this: HTMLElement,
-  ) {
-    return this.classList.contains("log-stream")
-      ? 440
-      : this.classList.contains("log-row")
-        ? 44
-        : 0;
-  });
-  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(900);
-});
+beforeEach(installLogsViewport);
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -124,10 +113,7 @@ it("formats only new rows until the locale or effective timezone changes", async
 
   timeZone = "America/Los_Angeles";
   const nextTime = "2026-09-22T20:00:00Z";
-  setEntries((rows) => [
-    ...rows,
-    { id: allTimes.length + 1, time: nextTime, raw: "keep next" },
-  ]);
+  setEntries((rows) => [...rows, { id: allTimes.length + 1, time: nextTime, raw: "keep next" }]);
   expectTimes([validTimes[0], appendedTime, nextTime], "en");
 
   timeZone = "Asia/Tokyo";
