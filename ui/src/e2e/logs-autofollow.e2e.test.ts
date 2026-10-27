@@ -162,7 +162,10 @@ suite.define(() => {
         },
       });
       await page.goto(`${suite.server.baseUrl}logs`);
-      await expect.poll(() => page.locator(".log-row").count()).toBe(80);
+      await expect
+        .poll(() => page.locator(".log-row").first().getAttribute("aria-setsize"))
+        .toBe("80");
+      await expect.poll(() => page.locator(".log-row").count()).toBeLessThan(80);
       await page.getByRole("switch", { name: "Auto-follow", exact: true }).uncheck();
       const stream = page.getByRole("region", { name: "Logs", exact: true });
       await stream.evaluate((element) => (element.scrollTop = 0));

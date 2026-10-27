@@ -117,7 +117,7 @@ interval, then release that response during the measured action.
 | `data-logs-scroll`           | Scroll up, release a tail, assert no scroll jump, then scroll to the bottom.                                                                                                                         |
 | `data-logs-long-stream`      | Enable auto-follow, deliver 10,000 lines over 20 native two-second polls, then assert newest line and 2,000-line cap. Expected wall duration is about 40 seconds; its wait is bounded at 60 seconds. |
 
-Logs with at least 100 matches render a variable-height window. The scenarios
+Logs always render a variable-height window. The scenarios
 read the retained result count from list-item `aria-setsize` and assert fewer than
 100 mounted rows; eager comparison builds use their DOM count. The append-only
 tail scenario keeps auto-follow disabled and verifies that the retained last
