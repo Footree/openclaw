@@ -276,7 +276,11 @@ export function createRepositoryGitHubPublicationRecovery(params: {
                 }
                 const result = await params.execute(row, assertCurrent);
                 // Execution validates the requester before returning an ordinary checkpoint wait.
-                return result.status === "requested" ? undefined : result;
+                return result.status === "requested" &&
+                  !row.checkpoint_ref &&
+                  !owner.workspace.checkpointRef
+                  ? undefined
+                  : result;
               };
               return params.recovery
                 ? await params.recovery.run(row, execute, async (result) => {
