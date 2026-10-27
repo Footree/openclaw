@@ -70,12 +70,12 @@ function installEngineBootReadiness() {
   requestAnimationFrame(sample);
 }
 
-function initScript(streaming = false) {
+function initScript(streaming = false, gatewayLatencyMs = 0) {
   return `;if (window === window.top && location.protocol !== "about:") {
     ${createColdLoadProbeInitScript({
       ownerProbes: false,
       sidebarCounters: false,
-      latencyMs: 0,
+      latencyMs: gatewayLatencyMs,
       frameGapMs: 0,
       events: [],
     })}
@@ -173,6 +173,13 @@ async function ready(page: Page, messageCount = 400): Promise<InteractionEvidenc
         }
       }
     }
+    const approvalReplay = rpcs
+      .filter((entry) => entry.method === "sessions.messages.subscribe")
+      .at(1);
+    if (approvalReplay) {
+      phases.approvalReplayRequestMs = approvalReplay.requestMs;
+      phases.approvalReplayResponseMs = approvalReplay.responseMs;
+    }
     return {
       ...milestones,
       ...phases,
@@ -213,10 +220,13 @@ async function persistTranscript(page: Page) {
   });
 }
 
-export function createEngineBootScenarios(baseUrl: string): readonly EngineScenario[] {
+export function createEngineBootScenarios(
+  baseUrl: string,
+  gatewayLatencyMs = 0,
+): readonly EngineScenario[] {
   const route = controlUiSessionPath(sessionKey);
   const url = new URL(route, baseUrl).href;
-  const bootScript = initScript();
+  const bootScript = initScript(false, gatewayLatencyMs);
   return [
     {
       id: "cold-boot",
@@ -264,7 +274,7 @@ export function createEngineBootScenarios(baseUrl: string): readonly EngineScena
       id: "streaming-645-deltas",
       route,
       expected: "All 645 standard Markdown deltas render at 30 Hz while native input survives.",
-      initScript: initScript(true),
+      initScript: initScript(true, gatewayLatencyMs),
       fixtureOverrides: () => ({
         sessionTranscripts: {
           [sessionKey]: {

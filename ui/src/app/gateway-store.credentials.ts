@@ -13,9 +13,9 @@ import {
   sameBootRecordOwner,
   type BootRecordOwner,
 } from "./boot-record.ts";
-import { clearWarmBootState } from "./bootstrap-warm-boot.ts";
 import type { ApplicationGatewayConnection } from "./gateway.ts";
 import { isRemoteControlUiIngress } from "./remote-ingress.ts";
+import { clearWarmBootState } from "./warm-boot-retirement.ts";
 
 type GatewayCredentials = Pick<
   GatewayBrowserClientOptions,

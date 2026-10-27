@@ -12,6 +12,7 @@ import {
   GatewayBrowserClient,
   resolveGatewayErrorDetailCode,
   type GatewayEventListener,
+  type GatewayBrowserClientOptions,
   type GatewayHelloOk,
 } from "../api/gateway.ts";
 import { CONTROL_UI_BUILD_INFO, controlUiBuildDiffersFrom } from "../build-info.ts";
@@ -77,7 +78,9 @@ export function createApplicationGateway(
     password: initialPassword,
   };
   let connectionRevision = 0;
-  const credentials = createGatewayCredentials(options.ownsWarmBoot !== false);
+  const early = options.earlyGateway;
+  const credentials =
+    early?.credentials ?? createGatewayCredentials(options.ownsWarmBoot !== false);
   let snapshot: ApplicationGatewaySnapshot = {
     client: null,
     phase: "stopped",
@@ -394,7 +397,7 @@ export function createApplicationGateway(
         ),
       });
     };
-    const nextClient = new GatewayBrowserClient({
+    const clientOptions: GatewayBrowserClientOptions = {
       ...credentials.prepare(nextConnection, credentialsChanged, client),
       clientName: options.clientOptions?.clientName ?? "openclaw-control-ui",
       clientVersion: CONTROL_UI_BUILD_INFO.version ?? "dev",
@@ -402,7 +405,8 @@ export function createApplicationGateway(
       platform: options.clientOptions?.platform,
       deviceFamily: options.clientOptions?.deviceFamily,
       mode: options.clientOptions?.mode ?? "webchat",
-      instanceId: options.clientOptions?.instanceId ?? generateUUID(),
+      instanceId:
+        options.clientOptions?.instanceId ?? early?.transport.client.instanceId ?? generateUUID(),
       scopes: options.clientOptions?.scopes,
       nativeConnectAuth: options.clientOptions?.nativeConnectAuth,
       get includeSessionMessageBodies() {
@@ -614,7 +618,9 @@ export function createApplicationGateway(
         record: recordGatewayEvent,
         listeners: eventListeners,
       }),
-    });
+    };
+    const nextClient =
+      early?.transport.adopt(clientOptions) ?? new GatewayBrowserClient(clientOptions);
     client = nextClient;
     updateAvatarContext();
     setConnectionSnapshot({
