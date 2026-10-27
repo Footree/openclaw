@@ -5,8 +5,12 @@ import {
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { resolveAssistantMessagePhase } from "../../../../src/shared/chat-message-content.js";
+import { isContractToolCallBlock } from "../../../../src/shared/tool-block-contract.js";
 import { extractText } from "../../lib/chat/message-extract.js";
-import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
+import {
+  areUiSessionKeysEquivalent,
+  normalizeDefaultMainSessionAliasForUi,
+} from "../../lib/sessions/session-key.ts";
 
 type LiveTerminalIdentity = {
   runId: string;
@@ -16,13 +20,21 @@ type LiveTerminalIdentity = {
 const liveTerminalIdentities = new WeakMap<object, LiveTerminalIdentity>();
 // Outcomes land beside published history arrays; caches keyed by them key this too.
 let liveTerminalRevision = 0;
-const authoritativeTerminals = new WeakMap<object, AuthoritativeTerminal>();
+// One armed record per run: two finals can land in one history page without
+// either displacing the other's retirement (#149153).
+const authoritativeTerminals = new WeakMap<object, Map<string, AuthoritativeTerminal>>();
 // Terminals whose run still read active at persistence time; the history reload
 // that owns them promotes the record so the live copy retires (#149153).
 const pendingAuthoritativeTerminals = new WeakMap<
   object,
   Map<string, PendingAuthoritativeTerminal>
 >();
+// Late chat.final replays consult historyApplied, so applied records must
+// outlive their runs; cap them so long-lived panes stay bounded. The
+// pre-#149153 design retained a single slot, so this is strictly safer.
+// Eviction runs at arm time only: a hydration flow's history filter and pane
+// cleanup must read one consistent applied snapshot (#149153).
+const APPLIED_TERMINAL_RETENTION = 64;
 
 type AuthoritativeTerminal = {
   historyApplied: boolean;
@@ -47,16 +59,25 @@ function ownsFinalReply(message: unknown): boolean {
   if (resolveAssistantMessagePhase(message) === "commentary") {
     return false;
   }
+  const content = asNullableRecord(message)?.content;
+  // A row that carries a tool invocation is a continuation, not the answer:
+  // owning it would suppress the real final that the run still owes (#149153).
+  if (Array.isArray(content) && content.some((block) => isContractToolCallBlock(block))) {
+    return false;
+  }
   return Boolean(extractText(message)?.trim());
 }
 
 /**
  * Stream-materialized projections carry no session identity and no live-terminal
- * tag, so retirement must also claim unkeyed fallbacks attributed to the run;
- * keyed (itemId) segments are commentary that keeps its place beside the final
- * (#149153).
+ * tag, so retirement must also claim unkeyed fallbacks attributed to an applied
+ * run; keyed (itemId) segments are commentary that keeps its place beside the
+ * final (#149153).
  */
-function isUnkeyedStreamProjectionForRun(message: unknown, runId: string): boolean {
+export function isUnkeyedStreamProjectionForRuns(
+  message: unknown,
+  appliedRunIds: ReadonlySet<string>,
+): boolean {
   const identity = readSessionMessageIdentity(message);
   if (identity?.id || identity?.role !== "assistant") {
     return false;
@@ -68,7 +89,62 @@ function isUnkeyedStreamProjectionForRun(message: unknown, runId: string): boole
   if (!fallback) {
     return false;
   }
-  return typeof fallback.runId === "string" && fallback.runId === runId;
+  return typeof fallback.runId === "string" && appliedRunIds.has(fallback.runId);
+}
+
+/** Any live projection of a run whose authoritative terminal is in history. */
+export function isSupersededLiveProjection(
+  message: unknown,
+  appliedRunIds: ReadonlySet<string>,
+): boolean {
+  const liveRunId = readLiveTerminalRunId(message);
+  if (liveRunId && appliedRunIds.has(liveRunId)) {
+    return true;
+  }
+  return isUnkeyedStreamProjectionForRuns(message, appliedRunIds);
+}
+
+/**
+ * Records are scoped per session: a host that reuses a run id in another
+ * session must not overwrite or borrow the first session's record (#149153).
+ * Session aliases normalize to one identity so exact-key reads agree with
+ * the equivalence-based reads everywhere else.
+ */
+function terminalRecordKey(sessionKey: string, runId: string): string {
+  return `${normalizeDefaultMainSessionAliasForUi(sessionKey)}\u0000${runId}`;
+}
+
+function trimAppliedTerminals(host: object): void {
+  const terminals = authoritativeTerminals.get(host);
+  if (!terminals) {
+    return;
+  }
+  let appliedCount = 0;
+  for (const terminal of terminals.values()) {
+    if (terminal.historyApplied) {
+      appliedCount += 1;
+    }
+  }
+  if (appliedCount <= APPLIED_TERMINAL_RETENTION) {
+    return;
+  }
+  for (const [key, terminal] of terminals) {
+    if (appliedCount <= APPLIED_TERMINAL_RETENTION) {
+      break;
+    }
+    if (!terminal.historyApplied) {
+      continue;
+    }
+    terminals.delete(key);
+    appliedCount -= 1;
+  }
+}
+
+function setAuthoritativeTerminal(host: object, record: AuthoritativeTerminal): void {
+  const terminals = authoritativeTerminals.get(host) ?? new Map<string, AuthoritativeTerminal>();
+  terminals.set(terminalRecordKey(record.sessionKey, record.runId), record);
+  authoritativeTerminals.set(host, terminals);
+  trimAppliedTerminals(host);
 }
 
 /** Associates a live terminal projection with its run without altering transcript bytes. */
@@ -148,11 +224,15 @@ export function rememberAuthoritativeTerminal(options: {
     const pendingByRun =
       pendingAuthoritativeTerminals.get(options.host) ??
       new Map<string, PendingAuthoritativeTerminal>();
-    pendingByRun.set(runId, { messageId, runId, sessionKey: options.event.key });
+    pendingByRun.set(terminalRecordKey(options.event.key, runId), {
+      messageId,
+      runId,
+      sessionKey: options.event.key,
+    });
     pendingAuthoritativeTerminals.set(options.host, pendingByRun);
     return;
   }
-  authoritativeTerminals.set(options.host, {
+  setAuthoritativeTerminal(options.host, {
     historyApplied: false,
     messageId,
     runId,
@@ -174,7 +254,7 @@ export function armPendingAuthoritativeTerminalForHistory(options: {
   if (!pendingByRun) {
     return;
   }
-  for (const [runId, pending] of pendingByRun) {
+  for (const [key, pending] of pendingByRun) {
     if (!areUiSessionKeysEquivalent(pending.sessionKey, options.sessionKey)) {
       continue;
     }
@@ -187,12 +267,17 @@ export function armPendingAuthoritativeTerminalForHistory(options: {
     if (!historyHasTerminal) {
       continue;
     }
-    pendingByRun.delete(runId);
-    const armed = authoritativeTerminals.get(options.host);
-    if (armed?.historyApplied && armed.runId === pending.runId) {
+    pendingByRun.delete(key);
+    // The applied fast path is scoped to the pending's own session: another
+    // session's record for the same run id must not block this promotion (#149153).
+    if (
+      authoritativeTerminals
+        .get(options.host)
+        ?.get(terminalRecordKey(pending.sessionKey, pending.runId))?.historyApplied
+    ) {
       continue;
     }
-    authoritativeTerminals.set(options.host, {
+    setAuthoritativeTerminal(options.host, {
       historyApplied: false,
       messageId: pending.messageId,
       runId: pending.runId,
@@ -204,38 +289,87 @@ export function armPendingAuthoritativeTerminalForHistory(options: {
   }
 }
 
+/**
+ * Marks every armed terminal whose row the applied history actually carries.
+ * Returns the applied run ids so callers can retire live projections of those
+ * runs wherever they render (#149153).
+ */
+export function applyAuthoritativeTerminalsForHistory(options: {
+  host: object;
+  sessionKey: string;
+  visibleMessages: readonly unknown[];
+}): ReadonlySet<string> {
+  const applied = new Set<string>();
+  const terminals = authoritativeTerminals.get(options.host);
+  if (!terminals?.size) {
+    return applied;
+  }
+  for (const [key, terminal] of terminals) {
+    // Session scope gates even the applied fast path: a host that switched
+    // sessions must not lend another session's applied run ids (#149153).
+    if (!areUiSessionKeysEquivalent(terminal.sessionKey, options.sessionKey)) {
+      continue;
+    }
+    if (terminal.historyApplied) {
+      applied.add(terminal.runId);
+      continue;
+    }
+    const historyHasTerminal = options.visibleMessages.some((message) => {
+      const identity = readSessionMessageIdentity(message);
+      return (
+        identity?.role === "assistant" && !identity.isImported && identity.id === terminal.messageId
+      );
+    });
+    if (!historyHasTerminal) {
+      continue;
+    }
+    terminals.set(key, { ...terminal, historyApplied: true });
+    applied.add(terminal.runId);
+  }
+  return applied;
+}
+
+/** Applied run ids for a session, for projection owners that retire live rows. */
+export function authoritativeAppliedRunIdsForSession(
+  host: object,
+  sessionKey: string,
+): ReadonlySet<string> {
+  const applied = new Set<string>();
+  for (const terminal of (authoritativeTerminals.get(host) ?? new Map()).values()) {
+    if (terminal.historyApplied && areUiSessionKeysEquivalent(terminal.sessionKey, sessionKey)) {
+      applied.add(terminal.runId);
+    }
+  }
+  return applied;
+}
+
 export function reconcileAuthoritativeTerminalHistory<T>(options: {
   host: object;
   previousMessages: T[];
   sessionKey: string;
   visibleMessages: T[];
 }): T[] {
-  const terminal = authoritativeTerminals.get(options.host);
-  const terminalMessage =
-    terminal && areUiSessionKeysEquivalent(terminal.sessionKey, options.sessionKey)
-      ? options.visibleMessages.find((message) => {
-          const identity = readSessionMessageIdentity(message);
-          return (
-            identity?.role === "assistant" &&
-            !identity.isImported &&
-            identity.id === terminal.messageId
-          );
-        })
-      : undefined;
-  if (!terminal || !terminalMessage) {
+  const appliedRunIds = applyAuthoritativeTerminalsForHistory(options);
+  if (!appliedRunIds.size) {
     return options.previousMessages;
   }
-  authoritativeTerminals.set(options.host, { ...terminal, historyApplied: true });
   return options.previousMessages.filter(
-    (message) =>
-      !isLiveTerminalForRun(message, terminal.runId) &&
-      !isUnkeyedStreamProjectionForRun(message, terminal.runId),
+    (message) => !isSupersededLiveProjection(message, appliedRunIds),
   );
 }
 
-export function authoritativeHistoryAppliedForRun(host: object, runId: string): boolean {
-  const terminal = authoritativeTerminals.get(host);
-  return terminal?.runId === runId && terminal.historyApplied;
+export function authoritativeHistoryAppliedForRun(
+  host: object,
+  runId: string,
+  sessionKey: string,
+): boolean {
+  const terminal = authoritativeTerminals.get(host)?.get(terminalRecordKey(sessionKey, runId));
+  if (!terminal || !terminal.historyApplied) {
+    return false;
+  }
+  // Session-scoped: a host that switched sessions must not lend another
+  // session's applied flag to a replaying final with a colliding run id (#149153).
+  return areUiSessionKeysEquivalent(terminal.sessionKey, sessionKey);
 }
 
 export function normalizeFinalAssistantMessage(message: unknown): Record<string, unknown> | null {

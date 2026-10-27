@@ -46,6 +46,7 @@ import { loadChatLiveTools } from "./chat-live-tools.ts";
 import { applyChatPendingInputs } from "./chat-pending-inputs.ts";
 import { isChatRunRecoveryStatus, reconcileChatRunStartup } from "./chat-run-startup.ts";
 import type { ChatHistoryHost, ChatHistorySessions, ChatState } from "./chat-state-contract.ts";
+import { retireSupersededLiveProjections } from "./history-merge-retirement.ts";
 import {
   getChatSessionProjection,
   readChatSessionProjectionScope,
@@ -67,6 +68,7 @@ import {
   prunePersistedToolStreamMessages,
 } from "./stream-segment-pruning.ts";
 import {
+  applyAuthoritativeTerminalsForHistory,
   armPendingAuthoritativeTerminalForHistory,
   reconcileAuthoritativeTerminalHistory,
 } from "./terminal-message-identity.ts";
@@ -223,6 +225,18 @@ export async function hydrateChatHistory(
       for (const payload of response.messages) {
         applySessionMessagePayload(state, payload, runActive, { kind: "history-delta" });
       }
+      // A delta can carry the row that arms a deferred terminal (#149153).
+      armPendingAuthoritativeTerminalForHistory({
+        host: state,
+        sessionKey,
+        visibleMessages: state.chatMessages,
+      });
+      applyAuthoritativeTerminalsForHistory({
+        host: state,
+        sessionKey,
+        visibleMessages: state.chatMessages,
+      });
+      retireSupersededLiveProjections(state, sessionKey);
       const historyProjection = getChatSessionProjection(state);
       if (Object.hasOwn(response.sessionInfo, "activeLeafEntryId")) {
         state.chatDisplayedLeafEntryId = response.sessionInfo.activeLeafEntryId?.trim() || null;
@@ -289,6 +303,9 @@ export async function hydrateChatHistory(
       sessionKey,
       visibleMessages,
     });
+    // The pane projection still holds the retired live rows; clear them before
+    // the snapshot reduction retains them as live entries (#149153).
+    retireSupersededLiveProjections(state, sessionKey);
     const hasActiveLeafEntryId = Object.hasOwn(res.sessionInfo ?? {}, "activeLeafEntryId");
     const nextDisplayedLeafEntryId = hasActiveLeafEntryId
       ? res.sessionInfo?.activeLeafEntryId?.trim() || null

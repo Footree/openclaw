@@ -1,7 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { buildAgentMainSessionKey, DEFAULT_MAIN_KEY } from "../../lib/sessions/session-key.ts";
 import {
   armPendingAuthoritativeTerminalForHistory,
+  authoritativeAppliedRunIdsForSession,
+  authoritativeHistoryAppliedForRun,
   reconcileAuthoritativeTerminalHistory,
   rememberAuthoritativeTerminal,
   rememberLiveTerminalRun,
@@ -237,28 +240,383 @@ describe("deferred authoritative terminals", () => {
     ).toEqual([]);
   });
 
-  it("still arms immediately when the run is already clear", () => {
+  it("retires both runs when one history page carries both finals", () => {
     const host = {};
-    const liveTerminal = rememberLiveTerminalRun(
-      { role: "assistant", content: [{ type: "text", text: "Final answer" }] },
+    const firstLive = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "text", text: "First answer" }] },
       "run-1",
     );
+    const secondLive = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "text", text: "Second answer" }] },
+      "run-2",
+    );
+    const persist = (runId: string, messageId: string, text: string) =>
+      rememberAuthoritativeTerminal({
+        event: { key: "main", runId, hasActiveRun: true },
+        host,
+        matchesChat: true,
+        payload: {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text }],
+            __openclaw: { id: messageId },
+          },
+          messageId,
+        },
+        runIdBeforeApply: runId,
+      });
+    persist("run-1", "first-message", "First answer");
+    persist("run-2", "second-message", "Second answer");
+
+    // One history page carrying both finals must retire both live copies:
+    // a single armed slot would let the second displace the first (#149153).
+    const page = [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "First answer" }],
+        __openclaw: { id: "first-message" },
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Second answer" }],
+        __openclaw: { id: "second-message" },
+      },
+    ];
+    armPendingAuthoritativeTerminalForHistory({
+      host,
+      sessionKey: "main",
+      visibleMessages: page,
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [firstLive, secondLive],
+        sessionKey: "main",
+        visibleMessages: page,
+      }),
+    ).toEqual([]);
+  });
+
+  it("never lets a tool continuation claim the run's final", () => {
+    const host = {};
+    const liveTerminal = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "text", text: "Real answer" }] },
+      "run-1",
+    );
+    // A persisted continuation row: text plus a tool invocation. Owning it would
+    // suppress the run's real final when chat.final replays (#149153).
+    const continuation = {
+      role: "assistant",
+      content: [
+        { type: "text", text: "checking the file" },
+        { type: "toolCall", id: "call-1", name: "read_file", input: {} },
+      ],
+      __openclaw: { id: "continuation-message" },
+    };
     rememberAuthoritativeTerminal({
-      event: { key: "main", runId: "run-1", hasActiveRun: false },
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
       host,
       matchesChat: true,
-      payload: { message: persistedFinal(), messageId: "final-message" },
+      payload: { message: continuation, messageId: "continuation-message" },
       runIdBeforeApply: "run-1",
     });
-
+    armPendingAuthoritativeTerminalForHistory({
+      host,
+      sessionKey: "main",
+      visibleMessages: [continuation],
+    });
     expect(
       reconcileAuthoritativeTerminalHistory({
         host,
         previousMessages: [liveTerminal],
         sessionKey: "main",
-        visibleMessages: [persistedFinal()],
+        visibleMessages: [continuation],
+      }),
+    ).toEqual([liveTerminal]);
+
+    // The run's real text-only final still owns retirement when it lands,
+    // even when its stop reason is a tool turn boundary.
+    const final = {
+      role: "assistant",
+      content: [{ type: "text", text: "Real answer" }],
+      stopReason: "toolUse",
+      __openclaw: { id: "final-message" },
+    };
+    rememberAuthoritativeTerminal({
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      host,
+      matchesChat: true,
+      payload: { message: final, messageId: "final-message" },
+      runIdBeforeApply: "run-1",
+    });
+    armPendingAuthoritativeTerminalForHistory({
+      host,
+      sessionKey: "main",
+      visibleMessages: [continuation, final],
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [liveTerminal],
+        sessionKey: "main",
+        visibleMessages: [continuation, final],
       }),
     ).toEqual([]);
+  });
+
+  it("keeps another session's live copy when the host reused a run id", () => {
+    const host = {};
+    // Session A retires run-1 through its own history.
+    const aFinal = {
+      role: "assistant",
+      content: [{ type: "text", text: "A answer" }],
+      __openclaw: { id: "a-final" },
+    };
+    rememberAuthoritativeTerminal({
+      event: { key: "agent:a:1", runId: "run-1", hasActiveRun: false },
+      host,
+      matchesChat: true,
+      payload: { message: aFinal, messageId: "a-final" },
+      runIdBeforeApply: "run-1",
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [],
+        sessionKey: "agent:a:1",
+        visibleMessages: [aFinal],
+      }),
+    ).toEqual([]);
+    // The same host on session B, reusing the run id, must keep its live copy:
+    // applied records are scoped by session, not just by host (#149153).
+    const liveB = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "text", text: "B answer" }] },
+      "run-1",
+    );
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [liveB],
+        sessionKey: "agent:b:2",
+        visibleMessages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "B answer" }],
+            __openclaw: { id: "b-final" },
+          },
+        ],
+      }),
+    ).toEqual([liveB]);
+  });
+
+  it("scopes the applied flag to its own session for chat.final replays", () => {
+    const host = {};
+    const aFinal = {
+      role: "assistant",
+      content: [{ type: "text", text: "A answer" }],
+      __openclaw: { id: "a-final" },
+    };
+    rememberAuthoritativeTerminal({
+      event: { key: "agent:a:1", runId: "run-1", hasActiveRun: false },
+      host,
+      matchesChat: true,
+      payload: { message: aFinal, messageId: "a-final" },
+      runIdBeforeApply: "run-1",
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [],
+        sessionKey: "agent:a:1",
+        visibleMessages: [aFinal],
+      }),
+    ).toEqual([]);
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "agent:a:1")).toBe(true);
+    // The same host on session B reusing the run id must not borrow A's flag:
+    // B's real final would be discarded as a replay at the gateway (#149153).
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "agent:b:2")).toBe(false);
+  });
+
+  it("keeps both sessions' applied flags when they reuse a run id", () => {
+    const host = {};
+    const armApplied = (sessionKey: string, finalId: string) => {
+      const final = {
+        role: "assistant",
+        content: [{ type: "text", text: `Answer ${finalId}` }],
+        __openclaw: { id: finalId },
+      };
+      rememberAuthoritativeTerminal({
+        event: { key: sessionKey, runId: "run-1", hasActiveRun: false },
+        host,
+        matchesChat: true,
+        payload: { message: final, messageId: finalId },
+        runIdBeforeApply: "run-1",
+      });
+      expect(
+        reconcileAuthoritativeTerminalHistory({
+          host,
+          previousMessages: [],
+          sessionKey,
+          visibleMessages: [final],
+        }),
+      ).toEqual([]);
+    };
+    armApplied("agent:a:1", "a-final");
+    armApplied("agent:b:2", "b-final");
+    // Session B's arm must not overwrite A's record: both flags stay valid (#149153).
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "agent:a:1")).toBe(true);
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "agent:b:2")).toBe(true);
+  });
+
+  it("still promotes another session's deferred terminal after this session applied the run id", () => {
+    const host = {};
+    const aFinal = {
+      role: "assistant",
+      content: [{ type: "text", text: "A answer" }],
+      __openclaw: { id: "a-final" },
+    };
+    rememberAuthoritativeTerminal({
+      event: { key: "agent:a:1", runId: "run-1", hasActiveRun: false },
+      host,
+      matchesChat: true,
+      payload: { message: aFinal, messageId: "a-final" },
+      runIdBeforeApply: "run-1",
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [],
+        sessionKey: "agent:a:1",
+        visibleMessages: [aFinal],
+      }),
+    ).toEqual([]);
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "agent:a:1")).toBe(true);
+    // Session B's deferred terminal for the same run id must still promote —
+    // A's applied record must not consume B's pending or block its retirement (#149153).
+    const liveB = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "text", text: "B answer" }] },
+      "run-1",
+    );
+    const bFinal = {
+      role: "assistant",
+      content: [{ type: "text", text: "B answer" }],
+      __openclaw: { id: "b-final" },
+    };
+    rememberAuthoritativeTerminal({
+      event: { key: "agent:b:2", runId: "run-1", hasActiveRun: true },
+      host,
+      matchesChat: true,
+      payload: { message: bFinal, messageId: "b-final" },
+      runIdBeforeApply: "run-1",
+    });
+    armPendingAuthoritativeTerminalForHistory({
+      host,
+      sessionKey: "agent:b:2",
+      visibleMessages: [bFinal],
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [liveB],
+        sessionKey: "agent:b:2",
+        visibleMessages: [bFinal],
+      }),
+    ).toEqual([]);
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "agent:b:2")).toBe(true);
+  });
+
+  it("normalizes equivalent session aliases to one record identity", () => {
+    const host = {};
+    const canonical = buildAgentMainSessionKey({ agentId: "main", mainKey: DEFAULT_MAIN_KEY });
+    const final = {
+      role: "assistant",
+      content: [{ type: "text", text: "Answer" }],
+      __openclaw: { id: "final-message" },
+    };
+    // Arm under the bare main alias; apply and query under the canonical agent key.
+    rememberAuthoritativeTerminal({
+      event: { key: DEFAULT_MAIN_KEY, runId: "run-1", hasActiveRun: false },
+      host,
+      matchesChat: true,
+      payload: { message: final, messageId: "final-message" },
+      runIdBeforeApply: "run-1",
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [],
+        sessionKey: canonical,
+        visibleMessages: [final],
+      }),
+    ).toEqual([]);
+    // Both reads must agree on one record: a late final replay stays
+    // suppressed instead of being re-admitted through an alias gap (#149153).
+    expect(authoritativeAppliedRunIdsForSession(host, canonical).has("run-1")).toBe(true);
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", canonical)).toBe(true);
+  });
+
+  it("keeps the history filter and the pane cleanup on one applied snapshot past the cap", () => {
+    const host = {};
+    const lives: unknown[] = [];
+    const page: unknown[] = [];
+    for (let index = 1; index <= 65; index += 1) {
+      const runId = `run-${index}`;
+      lives.push(
+        rememberLiveTerminalRun(
+          { role: "assistant", content: [{ type: "text", text: `Answer ${index}` }] },
+          runId,
+        ),
+      );
+      rememberAuthoritativeTerminal({
+        event: { key: "main", runId, hasActiveRun: true },
+        host,
+        matchesChat: true,
+        payload: {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: `Answer ${index}` }],
+            __openclaw: { id: `final-${index}` },
+          },
+          messageId: `final-${index}`,
+        },
+        runIdBeforeApply: runId,
+      });
+      page.push({
+        role: "assistant",
+        content: [{ type: "text", text: `Answer ${index}` }],
+        __openclaw: { id: `final-${index}` },
+      });
+    }
+    armPendingAuthoritativeTerminalForHistory({ host, sessionKey: "main", visibleMessages: page });
+    // One page applying 65 terminals: the filter and the pane cleanup must read
+    // the same applied set — eviction happens at arm time, never in between (#149153).
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: lives,
+        sessionKey: "main",
+        visibleMessages: page,
+      }),
+    ).toEqual([]);
+    expect(authoritativeAppliedRunIdsForSession(host, "main").size).toBe(65);
+    // The next arm trims past the cap; the oldest applied run loses its flag
+    // (documented boundary, still strictly safer than the old single slot).
+    rememberAuthoritativeTerminal({
+      event: { key: "main", runId: "run-66", hasActiveRun: false },
+      host,
+      matchesChat: true,
+      payload: {
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Late answer" }],
+          __openclaw: { id: "late-final" },
+        },
+        messageId: "late-final",
+      },
+      runIdBeforeApply: "run-66",
+    });
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "main")).toBe(false);
+    expect(authoritativeHistoryAppliedForRun(host, "run-2", "main")).toBe(true);
   });
 });
 

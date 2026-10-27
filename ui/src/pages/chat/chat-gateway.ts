@@ -175,7 +175,9 @@ export function handleChatGatewayEvent(state: ChatState, incoming?: ChatEventPay
     typeof payload.runId === "string" &&
     payload.runId === state.chatRunId;
   const authoritativeTerminalMatches = Boolean(
-    payload.runId && authoritativeHistoryAppliedForRun(state, payload.runId) && sessionMatches,
+    payload.runId &&
+    authoritativeHistoryAppliedForRun(state, payload.runId, payload.sessionKey) &&
+    sessionMatches,
   );
   if (!sessionMatches) {
     if (payload.state === "final") {
