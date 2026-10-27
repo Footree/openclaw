@@ -40,15 +40,9 @@ function makeStateEnv(): NodeJS.ProcessEnv {
   return { OPENCLAW_STATE_DIR: makeTempDir(cleanupDirs, "proxy-capture-") };
 }
 
-function storagePaths(env: NodeJS.ProcessEnv) {
-  return {
-    dbPath: path.join(env.OPENCLAW_STATE_DIR!, "capture.sqlite"),
-    blobDir: path.join(env.OPENCLAW_STATE_DIR!, "blobs"),
-  };
-}
-
 function makeLease(kind: "shared" | "path", env = makeStateEnv()) {
-  const { dbPath, blobDir } = storagePaths(env);
+  const dbPath = path.join(env.OPENCLAW_STATE_DIR!, "capture.sqlite");
+  const blobDir = path.join(env.OPENCLAW_STATE_DIR!, "blobs");
   const lease =
     kind === "path"
       ? acquireDebugProxyCaptureStore(dbPath, blobDir)
@@ -196,6 +190,7 @@ describe("DebugProxyCaptureStore", () => {
         activity === "quiet"
           ? [SQLITE_IDLE_HANDLE_TTL_MS + 1]
           : [SQLITE_IDLE_HANDLE_TTL_MS / 2 + 1, SQLITE_IDLE_HANDLE_TTL_MS / 2 + 1];
+      const expected = intervals.map((_, index) => `retained-${index}`).toReversed();
       for (const [index, interval] of intervals.entries()) {
         vi.advanceTimersByTime(interval);
         recordEvent(store, {
@@ -206,7 +201,7 @@ describe("DebugProxyCaptureStore", () => {
         });
       }
       expect(store.getSessionEvents("retained-capture").map((event) => event.flowId)).toEqual(
-        intervals.map((_, index) => `retained-${index}`).toReversed(),
+        expected,
       );
       store.close();
       expect(store.db.isOpen).toBe(true);
@@ -217,7 +212,7 @@ describe("DebugProxyCaptureStore", () => {
 
       const reopened = getDebugProxyCaptureStore(options);
       expect(reopened.getSessionEvents("retained-capture").map((event) => event.flowId)).toEqual(
-        intervals.map((_, index) => `retained-${index}`).toReversed(),
+        expected,
       );
     },
   );
