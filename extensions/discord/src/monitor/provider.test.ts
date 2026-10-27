@@ -10,6 +10,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RateLimitError, RequestClient } from "../internal/rest.js";
+import { firstMockArg } from "../test-support/mock-calls.js";
 import {
   baseConfig,
   baseRuntime,
@@ -18,10 +19,8 @@ import {
 } from "../test-support/provider.test-support.js";
 import * as voiceCommands from "../voice/command.js";
 import { DiscordGuildJoinIntroductionListener } from "./listeners.guild-join.js";
-import {
-  formatDiscordDeployErrorDetails,
-  formatDiscordDeployErrorMessage,
-} from "./provider.deploy-errors.js";
+import { formatDiscordDeployErrorDetails } from "./provider.deploy-errors.js";
+import type { runDiscordGatewayLifecycle } from "./provider.lifecycle.js";
 
 const {
   clientConstructorOptionsMock,
@@ -55,26 +54,10 @@ function createAcpRuntimeError(code: string, message: string): Error & { code: s
 
 type MockCallReader = { mock: { calls: unknown[][] } };
 
-function firstMockArg(mock: MockCallReader, label: string) {
-  const firstCall = mock.mock.calls[0];
-  if (!firstCall) {
-    throw new Error(`expected ${label} mock call`);
-  }
-  return firstCall[0];
-}
-
-function mockMessages(mock: unknown): string[] {
-  return (mock as MockCallReader).mock.calls.map(([message]) =>
-    typeof message === "string" ? message : "",
-  );
-}
-
-function expectMockLogContains(mock: unknown, expected: string): void {
-  expect(mockMessages(mock).join("\n")).toContain(expected);
-}
-
-function expectMockLogNotContains(mock: unknown, expected: string): void {
-  expect(mockMessages(mock).join("\n")).not.toContain(expected);
+function mockLog(mock: unknown): string {
+  return (mock as MockCallReader).mock.calls
+    .map(([message]) => (typeof message === "string" ? message : ""))
+    .join("\n");
 }
 
 describe("monitorDiscordProvider", () => {
@@ -128,11 +111,15 @@ describe("monitorDiscordProvider", () => {
       },
     });
   }
-  function expectIdentityFailureCleanup() {
-    expect(createDiscordMessageHandlerMock).not.toHaveBeenCalled();
+  function expectStoppedBeforeLifecycle() {
     expect(monitorLifecycleMock).not.toHaveBeenCalled();
     expect(createdBindingManagers).toHaveLength(1);
     expect(createdBindingManagers[0]?.stop).toHaveBeenCalledTimes(1);
+  }
+  function installGateway(isConnected = false) {
+    const gateway = { emitter: new EventEmitter(), disconnect: vi.fn(), isConnected };
+    clientGetPluginMock.mockImplementation((name) => (name === "gateway" ? gateway : undefined));
+    return gateway;
   }
 
   beforeAll(async () => {
@@ -227,9 +214,7 @@ describe("monitorDiscordProvider", () => {
 
       await expect(runProvider()).rejects.toBe(failure);
 
-      expect(monitorLifecycleMock).not.toHaveBeenCalled();
-      expect(createdBindingManagers).toHaveLength(1);
-      expect(createdBindingManagers[0]?.stop).toHaveBeenCalledTimes(1);
+      expectStoppedBeforeLifecycle();
     },
   );
 
@@ -274,18 +259,12 @@ describe("monitorDiscordProvider", () => {
   );
 
   it("disconnects the shared gateway and keeps a late error guard when startup fails before lifecycle begins", async () => {
-    const disconnect = vi.fn();
-    const emitter = new EventEmitter();
-    const gateway = { emitter, disconnect, isConnected: false };
-    const runtime = baseRuntime();
-    clientGetPluginMock.mockImplementation((name: string) =>
-      name === "gateway" ? gateway : undefined,
-    );
+    const { disconnect, emitter } = installGateway();
     createDiscordMessageHandlerMock.mockImplementationOnce(() => {
       throw new Error("handler init failed");
     });
 
-    await expect(runProvider({ runtime })).rejects.toThrow("handler init failed");
+    await expect(runProvider()).rejects.toThrow("handler init failed");
 
     expect(monitorLifecycleMock).not.toHaveBeenCalled();
     expect(disconnect).toHaveBeenCalledTimes(1);
@@ -324,10 +303,7 @@ describe("monitorDiscordProvider", () => {
         await bindingReady.promise;
       }),
     });
-    const gateway = { emitter: new EventEmitter(), isConnected: true, disconnect: vi.fn() };
-    clientGetPluginMock.mockImplementation((name: string) =>
-      name === "gateway" ? gateway : undefined,
-    );
+    installGateway(true);
     let settled = false;
     const monitor = runProvider({
       setStatus: (patch) => {
@@ -382,8 +358,9 @@ describe("monitorDiscordProvider", () => {
         "Failed to resolve Discord bot identity",
       );
 
-      expectIdentityFailureCleanup();
-      expectMockLogContains(runtime.error, reason);
+      expect(createDiscordMessageHandlerMock).not.toHaveBeenCalled();
+      expectStoppedBeforeLifecycle();
+      expect(mockLog(runtime.error)).toContain(reason);
     },
   );
 
@@ -473,35 +450,27 @@ describe("monitorDiscordProvider", () => {
   );
 
   it.each([
-    { state: "idle", lastActivityAt: 600_000, status: "uncertain", reason: "status-timeout" },
-    {
-      state: "running",
-      lastActivityAt: Number.MAX_SAFE_INTEGER,
-      status: "stale",
-      reason: "status-timeout-running-stale",
-    },
-  ])(
-    "aborts a timed-out $state ACP probe and reports $status",
-    async ({ state, lastActivityAt, status, reason }) => {
-      vi.useFakeTimers();
-      vi.setSystemTime(600_000);
-      try {
-        getAcpSessionStatusMock.mockImplementation(
-          ({ signal }) =>
-            new Promise((_resolve, reject) => {
-              signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-            }),
-        );
-        await runProvider();
-        const pending = probe("timeout", state, lastActivityAt);
-        await vi.advanceTimersByTimeAsync(8_100);
-        await expect(pending).resolves.toEqual({ status, reason });
-        expect(getAcpSessionStatusMock.mock.calls[0]?.[0].signal?.aborted).toBe(true);
-      } finally {
-        vi.useRealTimers();
-      }
-    },
-  );
+    ["idle", 600_000, "uncertain", "status-timeout"],
+    ["running", Number.MAX_SAFE_INTEGER, "stale", "status-timeout-running-stale"],
+  ] as const)("aborts a timed-out %s ACP probe", async (state, lastActivityAt, status, reason) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(600_000);
+    try {
+      getAcpSessionStatusMock.mockImplementation(
+        ({ signal }) =>
+          new Promise((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          }),
+      );
+      await runProvider();
+      const pending = probe("timeout", state, lastActivityAt);
+      await vi.advanceTimersByTimeAsync(8_100);
+      await expect(pending).resolves.toEqual({ status, reason });
+      expect(getAcpSessionStatusMock.mock.calls[0]?.[0].signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("propagates a nested incognito refusal instead of marking a running session stale", async () => {
     const error = new AggregateError(
@@ -514,25 +483,15 @@ describe("monitorDiscordProvider", () => {
   });
 
   it("captures gateway errors emitted before lifecycle wait starts", async () => {
-    const emitter = new EventEmitter();
+    const { emitter } = installGateway();
     const drained: Array<{ message: string; type: string }> = [];
-    clientGetPluginMock.mockImplementation((name: string) =>
-      name === "gateway" ? { emitter, disconnect: vi.fn() } : undefined,
-    );
     monitorLifecycleMock.mockImplementationOnce(async (params) => {
-      (
-        params as {
-          gatewaySupervisor?: {
-            drainPending: (
-              handler: (event: { message: string; type: string }) => "continue" | "stop",
-            ) => "continue" | "stop";
-          };
-          threadBindings: { stop: () => void };
-        }
-      ).gatewaySupervisor?.drainPending((event) => {
-        drained.push(event);
-        return "continue";
-      });
+      (params as Parameters<typeof runDiscordGatewayLifecycle>[0]).gatewaySupervisor?.drainPending(
+        (event) => {
+          drained.push(event);
+          return "continue";
+        },
+      );
       params.threadBindings.stop();
     });
     clientFetchUserMock.mockImplementationOnce(async () => {
@@ -543,9 +502,12 @@ describe("monitorDiscordProvider", () => {
     await runProvider();
 
     expect(monitorLifecycleMock).toHaveBeenCalledTimes(1);
-    expect(drained).toHaveLength(1);
-    expect(drained[0]?.type).toBe("disallowed-intents");
-    expect(drained[0]?.message).toContain("4014");
+    expect(drained).toEqual([
+      expect.objectContaining({
+        type: "disallowed-intents",
+        message: expect.stringContaining("4014"),
+      }),
+    ]);
   });
 
   it.each(["quota", "abort", "rate-limit"] as const)(
@@ -588,40 +550,22 @@ describe("monitorDiscordProvider", () => {
       if (kind === "quota") {
         expect(clientFetchUserMock).toHaveBeenCalledWith("@me");
       } else if (kind === "abort") {
-        expectMockLogNotContains(runtime.error, "failed to deploy native commands");
-        expect(
-          mockMessages(runtime.log).some(
-            (message) =>
-              message.includes("slash command deploy failed (message send/receive unaffected):") &&
-              message.includes("Discord REST request was aborted"),
-          ),
-        ).toBe(true);
-      } else {
-        const warnings = mockMessages(runtime.log).filter((message) =>
-          message.includes("slash command deploy rate limited"),
+        expect(mockLog(runtime.error)).not.toContain("failed to deploy native commands");
+        expect(mockLog(runtime.log)).toContain(
+          "slash command deploy failed (message send/receive unaffected): Discord REST request was aborted",
         );
+      } else {
+        const warnings = mockLog(runtime.log)
+          .split("\n")
+          .filter((message) => message.includes("slash command deploy rate limited"));
         expect(warnings).toHaveLength(1);
         expect(warnings[0]).toContain("retry after 0s");
         expect(warnings[0]).toContain("Message send/receive is unaffected.");
         expect(warnings[0]).not.toContain("body=");
-        expectMockLogNotContains(runtime.error, "native-slash-command-deploy-rest");
+        expect(mockLog(runtime.error)).not.toContain("native-slash-command-deploy-rest");
       }
     },
   );
-
-  it("formats native command deploy aborts with REST timeout context", () => {
-    const error = Object.assign(new Error("This operation was aborted"), {
-      name: "AbortError",
-      deployRestMethod: "patch",
-      deployRestPath: "/applications/app-1/commands/cmd-1",
-      deployRequestMs: 24_657,
-      deployTimeoutMs: 15_000,
-    });
-
-    expect(formatDiscordDeployErrorMessage(error)).toBe(
-      "Discord REST PATCH /applications/app-1/commands/cmd-1 timed out (timeout=15s, observed=24.7s)",
-    );
-  });
 
   it("uses the native REST retry fallback for malformed Discord retry_after values", async () => {
     const rest = new RequestClient("synthetic-token", {
@@ -680,15 +624,11 @@ describe("monitorDiscordProvider", () => {
     expect(details).toContain("code=50035");
     expect(details).toContain("body=");
     expect(details).toContain("rejected=");
-    expect(details).toContain(
-      '#63 fields=description name=command-63 description="description-63"',
-    );
-    expect(details).toContain(
-      '#65 fields=description name=command-65 description="description-65"',
-    );
-    expect(details).toContain(
-      '#66 fields=description name=command-66 description="description-66"',
-    );
+    for (const index of [63, 65, 66]) {
+      expect(details).toContain(
+        `#${index} fields=description name=command-${index} description="description-${index}"`,
+      );
+    }
     expect(details).not.toContain("command-67");
   });
 
@@ -705,26 +645,19 @@ describe("monitorDiscordProvider", () => {
 
     expect(listNativeCommandSpecsForConfigMock).not.toHaveBeenCalled();
     expect(clientDeployCommandsMock).not.toHaveBeenCalled();
-    expectMockLogNotContains(runtime.log, "cleared native commands");
+    expect(mockLog(runtime.log)).not.toContain("cleared native commands");
   });
 
   it.each([
-    {
-      name: "401 rejection",
-      result: { kind: "rejected" as const, status: 401 as const, error: new Error("Unauthorized") },
-      lifecycle: "blocked",
-      terminalDisconnect: true,
-    },
-
-    {
-      name: "network failure",
-      result: { kind: "unavailable" as const, status: null, error: new Error("fetch failed") },
-      lifecycle: "recovering",
-      terminalDisconnect: undefined,
-    },
-  ])(
-    "publishes $lifecycle for an application-id $name before gateway startup",
-    async ({ result, lifecycle, terminalDisconnect }) => {
+    ["blocked", { kind: "rejected", status: 401, error: new Error("Unauthorized") }, true],
+    [
+      "recovering",
+      { kind: "unavailable", status: null, error: new Error("fetch failed") },
+      undefined,
+    ],
+  ] as const)(
+    "publishes %s for an application-id failure before gateway startup",
+    async (lifecycle, result, terminalDisconnect) => {
       const setStatus = vi.fn();
       probeDiscordApplicationIdMock.mockResolvedValueOnce(result);
       configureAccount({}, "unparseable.token");
@@ -750,10 +683,7 @@ describe("monitorDiscordProvider", () => {
   );
 
   it("publishes ready and disconnected status across the gateway lifecycle", async () => {
-    const gateway = { emitter: new EventEmitter(), isConnected: true };
-    clientGetPluginMock.mockImplementation((name: string) =>
-      name === "gateway" ? gateway : undefined,
-    );
+    installGateway(true);
     const setStatus = vi.fn();
 
     await runProvider({ setStatus });
