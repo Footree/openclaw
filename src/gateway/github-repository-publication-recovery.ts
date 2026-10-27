@@ -157,6 +157,7 @@ export function createRepositoryGitHubPublicationRecovery(params: {
   execute: (
     row: RepositoryGitHubPublicationRow,
     assertCustody: () => void,
+    recoveryResult?: SessionGitHubPublicationResult,
   ) => Promise<SessionGitHubPublicationResult>;
 }) {
   const { placements } = params;
@@ -276,7 +277,15 @@ export function createRepositoryGitHubPublicationRecovery(params: {
                 return await params.execute(row, assertCurrent);
               };
               return params.recovery
-                ? await params.recovery.run(row.request_id, execute)
+                ? await params.recovery.run(row, execute, async (result) => {
+                    // The failed attempt can replace the execution claim before settlement.
+                    const current = await readRepositoryGitHubPublicationInWorker(row.request_id);
+                    assertCurrent();
+                    if (!current) {
+                      throw new Error("GitHub repository publication receipt is unavailable.");
+                    }
+                    return params.execute(current, assertCurrent, result);
+                  })
                 : await execute();
             },
           );

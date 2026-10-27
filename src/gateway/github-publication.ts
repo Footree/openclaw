@@ -237,6 +237,7 @@ export function createGitHubPublicationCoordinator(params: {
     validateExecution: () => boolean,
     assertInvocationCurrent?: () => void,
     invocationSignal?: AbortSignal,
+    recoveryResult?: SessionGitHubPublicationResult,
   ): Promise<SessionGitHubPublicationResult> => {
     if (initial.status === "published" || initial.status === "failed") {
       return Promise.resolve(publicationResult(initial));
@@ -318,6 +319,14 @@ export function createGitHubPublicationCoordinator(params: {
           });
           try {
             assertOwned();
+            if (recoveryResult) {
+              if (!validateCustody()) {
+                throw new GitHubPublicationAuthorityLostError(
+                  "GitHub publication recovery custody changed.",
+                );
+              }
+              return publicationResult(await executionStore.complete(claimed, recoveryResult));
+            }
             return await executeGitHubPublication({
               initial: claimed,
               requester: getRequester,

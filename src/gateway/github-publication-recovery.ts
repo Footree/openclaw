@@ -24,9 +24,12 @@ export type GitHubPublicationRecoveryBackoff = ReturnType<
   typeof createGitHubPublicationRecoveryBackoff
 >;
 
-/** Maintenance-only, process-local scheduling; an unconfirmed receipt remains unsettled. */
+/** Backoff is process-local; the receipt age also bounds recovery across restarts. */
 export function createGitHubPublicationRecoveryBackoff() {
-  const failures = new Map<string, { delayMs: number; retryAtMs: number; diagnostic: string }>();
+  const failures = new Map<
+    string,
+    { attempts: number; delayMs: number; retryAtMs: number; diagnostic: string }
+  >();
   return {
     clear: () => failures.clear(),
     retain(requestIds: string[]) {
@@ -37,31 +40,63 @@ export function createGitHubPublicationRecoveryBackoff() {
         }
       }
     },
-    async run(requestId: string, operation: () => Promise<SessionGitHubPublicationResult | void>) {
+    async run(
+      row: { request_id: string; created_at_ms: number },
+      operation: () => Promise<SessionGitHubPublicationResult | void>,
+      settle: (result: SessionGitHubPublicationResult) => Promise<SessionGitHubPublicationResult>,
+    ) {
+      const requestId = row.request_id;
       const previous = failures.get(requestId);
       if (previous && performance.now() < previous.retryAtMs) {
         return;
       }
       const defer = (error: unknown) => {
         const delayMs = Math.min((previous?.delayMs ?? 30_000) * 2, 30 * 60_000);
-        failures.set(requestId, {
+        const deferred = {
+          attempts: (previous?.attempts ?? 0) + 1,
           delayMs,
           retryAtMs: performance.now() + delayMs,
           diagnostic: redactToolPayloadText(formatErrorMessage(error)).slice(0, 2_048),
-        });
+        };
+        failures.set(requestId, deferred);
+        return deferred;
       };
+      let result: SessionGitHubPublicationResult | void = undefined;
+      let failure: unknown;
       try {
-        const result = await operation();
-        if (result && (result.status === "requested" || result.status === "publishing")) {
-          defer(result.message);
-        } else {
-          failures.delete(requestId);
+        if ((previous?.attempts ?? 0) >= 3) {
+          throw new Error(previous?.diagnostic);
         }
-        return result;
+        result = await operation();
+        if (!result || (result.status !== "requested" && result.status !== "publishing")) {
+          failures.delete(requestId);
+          return result;
+        }
+        failure = result.message;
       } catch (error) {
-        defer(error);
-        throw error;
+        failure = error;
       }
+      // Three failed attempts suffice for transient outages. An old receipt gets one
+      // final attempt after restart, so frequent restarts cannot extend recovery forever.
+      const deferred = defer(failure);
+      if ((previous?.attempts ?? 0) >= 2 || Date.now() - row.created_at_ms >= 60 * 60_000) {
+        // A failed settlement retries only the receipt write, never GitHub effects.
+        deferred.attempts = 3;
+        const settled = await settle({
+          requestId,
+          status: "failed",
+          code: "unavailable",
+          message: "GitHub publication recovery stopped with an unconfirmed outcome.",
+          nextAction:
+            "Automatic recovery stopped because the original publication remains unconfirmed. Recorded GitHub effects and saved work are retained. Inspect the original target and any existing branch or pull request before requesting a new publication; it may already have succeeded.",
+        });
+        failures.delete(requestId);
+        return settled;
+      }
+      if (!result) {
+        throw failure;
+      }
+      return result;
     },
     describe(result: SessionGitHubPublicationResult): SessionGitHubPublicationResult {
       const failure = failures.get(result.requestId);

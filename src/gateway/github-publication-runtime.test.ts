@@ -22,11 +22,14 @@ import {
   BRANCH,
   NEW_HEAD,
   OLD_HEAD,
+  SESSION_ID,
+  SESSION_KEY,
   WORKSPACE_TREE,
   createTestGitHubPublicationRuntime,
   commandResult,
   githubPublicationTestMocks,
   installGitHubPublicationTestHarness,
+  publicationRequest,
   seedLocalPublication,
 } from "./github-publication.test-support.js";
 import { insertSharedWorktreeReceipt } from "./github-shared-publication.test-support.js";
@@ -57,74 +60,96 @@ function installPublicationRecoveryTests(engine: "sqlite" | "postgres") {
   installGitHubPublicationTestHarness();
   afterEach(() => vi.restoreAllMocks());
 
-  it("backs off an unconfirmed publication after base materialization fails", async () => {
-    let now = performance.now();
-    vi.spyOn(performance, "now").mockImplementation(() => now);
-    withEngineStoreAdmission(() =>
-      runOpenClawStateWriteTransaction((database) =>
-        seedLocalPublication(database, {
-          requestId: "base-fetch-unconfirmed",
+  it.each([false, true])(
+    "settles an unreadable publication with old receipt=%s and permits a new request after restart",
+    async (oldReceipt) => {
+      const createdAtMs = Date.now() - (oldReceipt ? 3_600_000 : 0);
+      let now = performance.now();
+      vi.spyOn(performance, "now").mockImplementation(() => now);
+      withEngineStoreAdmission(() =>
+        runOpenClawStateWriteTransaction((database) =>
+          seedLocalPublication(database, {
+            requestId: "base-fetch-unconfirmed",
+            status: "publishing",
+            createdAtMs,
+          }),
+        ),
+      );
+      const transport = githubPublicationTestMocks().runCommand;
+      const original = transport.getMockImplementation()!;
+      transport.mockImplementation(async (argv: string[], ...args: unknown[]) =>
+        argv.includes("fetch")
+          ? {
+              ...commandResult("", 1),
+              stderr: Buffer.from(
+                "fatal: Could not resolve host: https://fixture-token@example.test/repo",
+              ),
+            }
+          : original(argv, ...args),
+      );
+      const warn = vi.fn();
+      const runtime = createRecoveryRuntime(warn);
+      for (let tick = 0; tick < 8; tick++) {
+        await runtime.reconcilePublications();
+      }
+      if (!oldReceipt) {
+        expect(await runtime.coordinator.readAsync("base-fetch-unconfirmed")).toMatchObject({
           status: "publishing",
+          message: expect.stringContaining("fatal: Could not resolve host"),
+        });
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]?.[0]).not.toContain("fixture-token");
+        for (const waitMs of [60_000, 120_000]) {
+          now += waitMs;
+          await runtime.reconcilePublications();
+        }
+      }
+      expect(await runtime.coordinator.readAsync("base-fetch-unconfirmed")).toMatchObject({
+        status: "failed",
+        code: "unavailable",
+        nextAction: expect.stringContaining("unconfirmed"),
+      });
+      expect(await runtime.coordinator.listUnreportedResultsAsync()).toMatchObject([
+        {
+          sessionId: SESSION_ID,
+          sessionKey: SESSION_KEY,
+          result: { requestId: "base-fetch-unconfirmed", status: "failed" },
+        },
+      ]);
+      expect(
+        await publicationStore.readGitHubPublicationRequestAsync({
+          sessionId: SESSION_ID,
+          idempotencyKey: "idempotency-base-fetch-unconfirmed",
         }),
-      ),
-    );
-    const transport = githubPublicationTestMocks().runCommand;
-    const original = transport.getMockImplementation()!;
-    transport.mockImplementation(async (argv: string[], ...args: unknown[]) =>
-      argv.includes("fetch")
-        ? {
-            ...commandResult("", 1),
-            stderr: Buffer.from(
-              "fatal: Could not resolve host: https://fixture-token@example.test/repo",
-            ),
-          }
-        : original(argv, ...args),
-    );
-    const warn = vi.fn();
-    const runtime = createRecoveryRuntime(warn);
-    for (let tick = 0; tick < 8; tick++) {
-      await runtime.reconcilePublications();
-    }
-    const calls = transport.mock.calls.map(([argv]) => argv as string[]);
-    expect(calls.filter((argv) => argv.includes("push") || argv.includes("POST"))).toEqual([]);
-    expect(await runtime.coordinator.readAsync("base-fetch-unconfirmed")).toMatchObject({
-      status: "publishing",
-      message: expect.stringContaining("fatal: Could not resolve host"),
-    });
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.[0]).toContain("fatal: Could not resolve host");
-    expect(
-      JSON.stringify(await runtime.coordinator.readAsync("base-fetch-unconfirmed")),
-    ).not.toContain("fixture-token");
-    expect(warn.mock.calls[0]?.[0]).not.toContain("fixture-token");
-    expect(calls.filter((argv) => argv.includes("fetch"))).toHaveLength(1);
-
-    let attempts = 1;
-    for (const waitMs of [60_000, 120_000, 240_000, 480_000, 960_000, 1_800_000, 1_800_000]) {
-      now += waitMs - 1;
-      await runtime.reconcilePublications();
-      expect(warn).toHaveBeenCalledTimes(attempts);
-      now++;
-      await runtime.reconcilePublications();
-      expect(warn).toHaveBeenCalledTimes(++attempts);
-      expect(warn.mock.calls.at(-1)?.[0]).toContain("fatal: Could not resolve host");
-    }
-    expect(transport.mock.calls.filter(([argv]) => argv.includes("fetch"))).toHaveLength(8);
-    expect(
-      transport.mock.calls.filter(([argv]) => argv.includes("push") || argv.includes("POST")),
-    ).toEqual([]);
-
-    // A restart deliberately resets this interim scheduling policy, not the accepted receipt.
-    await runtime.close();
-    const restarted = createRecoveryRuntime(warn);
-    await restarted.reconcilePublications();
-    expect(warn).toHaveBeenCalledTimes(9);
-    expect(await restarted.coordinator.readAsync("base-fetch-unconfirmed")).toMatchObject({
-      status: "publishing",
-    });
-  });
+      ).toMatchObject({
+        head_commit: NEW_HEAD,
+        repository: "openclaw/openclaw",
+        branch: BRANCH,
+      });
+      await runtime.close();
+      const restarted = createRecoveryRuntime(warn);
+      now += 3_600_000;
+      await restarted.reconcilePublications();
+      expect(await restarted.coordinator.readAsync("base-fetch-unconfirmed")).toMatchObject({
+        status: "failed",
+      });
+      expect(transport.mock.calls.filter(([argv]) => argv.includes("fetch"))).toHaveLength(
+        oldReceipt ? 1 : 3,
+      );
+      expect(
+        transport.mock.calls.filter(([argv]) => argv.includes("push") || argv.includes("POST")),
+      ).toEqual([]);
+      transport.mockImplementation(original);
+      const next = await restarted.coordinator.requestForSessionV2(
+        publicationRequest("after-settlement"),
+      );
+      expect(next.status).toBe("published");
+      expect(next.requestId).not.toBe("base-fetch-unconfirmed");
+    },
+  );
 
   it("recovers the original publication after a transient fetch failure without another push or PR", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_001);
     const requestId = "transient-fetch";
     withEngineStoreAdmission(() =>
       runOpenClawStateWriteTransaction((database) =>
