@@ -20,15 +20,21 @@ const renderSessionActivityViewSolid = mountSolid<ReturnType<typeof props>>(
   (input) => createSolidApplicationContextProvider(input.context).wrapper,
 );
 
-function find(selector: string, root: ParentNode = container) {
-  return root.querySelector(selector);
+function find<T extends Element = HTMLElement>(selector: string, root: ParentNode = container) {
+  return root.querySelector<T>(selector);
 }
-function all(selector: string, root: ParentNode = container) {
-  return root.querySelectorAll(selector);
+function all<T extends Element = HTMLElement>(selector: string, root: ParentNode = container) {
+  return root.querySelectorAll<T>(selector);
 }
 
 const text = (selector: string, root: ParentNode | null | undefined = container) =>
   root?.querySelector(selector)?.textContent;
+const texts = (selector: string, root: ParentNode = container) =>
+  Array.from(all(selector, root), (element) => element.textContent);
+const attr = (selector: string, name: string, root: ParentNode = container) =>
+  find(selector, root)?.getAttribute(name);
+const sessionSelector = (key: string, selector = "") =>
+  `[data-activity-session="${key}"] ${selector}`.trim();
 
 function profile(id: string, overrides: Partial<PresenceViewer> = {}) {
   return {
@@ -154,10 +160,10 @@ describe("session activity semantics", () => {
     expect(text(".activity-pulse__stats")?.replace(/\s+/g, " ").trim()).toBe(
       sessions + " · " + people + " · 0 running now",
     );
-    expect(find('[role="img"]')?.getAttribute("aria-label")).toBe(
+    expect(attr('[role="img"]', "aria-label")).toBe(
       "All time: " + sessions + "; busiest " + period,
     );
-    expect(find(".activity-pulse__bar")?.getAttribute("title")).toBe(period + " · " + sessions);
+    expect(attr(".activity-pulse__bar", "title")).toBe(period + " · " + sessions);
     expect(all(".activity-pulse__stats > span")[1]?.hasAttribute("title")).toBe(incomplete);
     const note = find('.activity-feed__people-panel [role="status"]');
     if (incomplete) {
@@ -413,14 +419,13 @@ describe("session activity people filter", () => {
     show(input);
     expect(text('[data-activity-identity="online"] h2')).toBe("online@example.test");
     expect(text(".activity-feed__identity")).toContain("Online");
-    const details = container.querySelector<HTMLDetailsElement>(
-      ".activity-feed__connection-details",
-    )!;
+    const details = find<HTMLDetailsElement>(".activity-feed__connection-details")!;
     expect(details.open).toBe(false);
     expect(text("summary", details)?.trim()).toBe("Connection details · 6");
-    expect(
-      [...all(".activity-feed__connection-summary span")].map((span) => span.textContent),
-    ).toEqual(["Mac · Web app", "Mac16,6 · Windows"]);
+    expect(texts(".activity-feed__connection-summary span")).toEqual([
+      "Mac · Web app",
+      "Mac16,6 · Windows",
+    ]);
     const groups = all(".activity-feed__connection");
     expect(groups).toHaveLength(4);
     expect(groups[0]?.textContent).toContain("3 connections");
@@ -450,7 +455,7 @@ describe("session activity people filter", () => {
       filters: { ...input.filters, personId: "other" },
       presenceViewers: [{ ...person, id: "other", identity: { type: "profile", id: "other" } }],
     });
-    expect(container.querySelector<HTMLDetailsElement>("details")?.open).toBe(false);
+    expect(find<HTMLDetailsElement>("details")?.open).toBe(false);
   });
 
   it("requires exact case when resolving a selected server profile facet", () => {
@@ -504,18 +509,14 @@ describe("session activity people filter", () => {
       onFiltersChange,
     });
 
-    const trigger = container.querySelector<HTMLButtonElement>(".activity-feed__people-trigger");
+    const trigger = find<HTMLButtonElement>(".activity-feed__people-trigger");
     trigger?.click();
     expect(trigger?.getAttribute("aria-expanded")).toBe("true");
     expect(document.activeElement).toBe(find(".activity-feed__people-popover"));
-    container.querySelector<HTMLButtonElement>('[data-activity-person=""]')?.click();
+    find<HTMLButtonElement>('[data-activity-person=""]')?.click();
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
 
-    expect(onFiltersChange).toHaveBeenCalledWith({
-      personId: null,
-      query: "release",
-      time: "30d",
-    });
+    expect(onFiltersChange).toHaveBeenCalledWith({ personId: null, query: "release", time: "30d" });
   });
 });
 
@@ -530,7 +531,7 @@ describe("session activity automation grouping", () => {
 
     show({ rows: [regular, automationOne, automationTwo], onAutomationDayToggle });
 
-    const group = container.querySelector<HTMLButtonElement>("[data-activity-automation-group]");
+    const group = find<HTMLButtonElement>("[data-activity-automation-group]");
     expect(group?.textContent).toContain("2 automation sessions");
     expect(group?.getAttribute("aria-expanded")).toBe("false");
     expect(all("[data-activity-session]")).toHaveLength(1);
@@ -557,14 +558,7 @@ describe("session activity automation grouping", () => {
       { filters: { personId: null, query: "Automation", time: "7d" as const } },
       {
         filters: { personId: "owner", query: "", time: "7d" as const },
-        presenceViewers: [
-          {
-            id: "owner",
-            identity: { type: "profile" as const, id: "owner" },
-            name: "Owner",
-            watchedSessions: [],
-          },
-        ],
+        presenceViewers: [profile("owner", { name: "Owner" })],
       },
     ]) {
       show({ rows: [automationOne, automationTwo], ...filteredProps });
@@ -587,45 +581,35 @@ describe("session activity live status", () => {
       runId,
       updatedAt: now,
     });
-    const rows = [
-      row("Digest run", owner, now, {
-        activeRunIds: ["fallback-run", "digest run:a/b"],
-        hasActiveRun: true,
-        observerDigest: digest("digest run:a/b"),
+    const rows = (
+      [
+        ["Digest run", ["fallback-run", "digest run:a/b"], "digest run:a/b", true],
+        ["Stale digest", ["current-run"], "ended-run", true],
+        ["Active run fallback", ["fallback run:a/b"], null, true],
+        ["Inactive run", ["inactive-run"], "inactive-run", undefined],
+      ] satisfies [string, string[], string | null, boolean | undefined][]
+    ).map(([key, activeRunIds, digestId, hasActiveRun], index) =>
+      row(key, owner, now - index * 500, {
+        activeRunIds,
+        hasActiveRun,
+        ...(digestId ? { observerDigest: digest(digestId) } : {}),
+        ...(key === "Inactive run" ? { status: "running" } : {}),
       }),
-      row("Stale digest", owner, now - 500, {
-        activeRunIds: ["current-run"],
-        hasActiveRun: true,
-        observerDigest: digest("ended-run"),
-      }),
-      row("Active run fallback", owner, now - 1_000, {
-        activeRunIds: ["fallback run:a/b"],
-        hasActiveRun: true,
-      }),
-      row("Inactive run", owner, now - 2_000, {
-        activeRunIds: ["inactive-run"],
-        status: "running",
-        observerDigest: digest("inactive-run"),
-      }),
-    ];
+    );
     show({ context: input.context, rows });
     expect(
-      [...container.querySelectorAll<HTMLAnchorElement>(".activity-feed__inspect-run")].map(
-        (link) => link.getAttribute("href"),
-      ),
+      Array.from(all(".activity-feed__inspect-run"), (link) => link.getAttribute("href")),
     ).toEqual(["/control/activity?view=run&run=digest%20run%3Aa%2Fb"]);
-    const active = find('[data-activity-session="Digest run"]')!;
-    expect(active.querySelector(".activity-feed__run-dot")).not.toBeNull();
-    expect(active.querySelector(".activity-feed__session-headline")?.textContent?.trim()).toBe(
+    const active = find(sessionSelector("Digest run"))!;
+    expect(find(".activity-feed__run-dot", active)).not.toBeNull();
+    expect(text(".activity-feed__session-headline", active)?.trim()).toBe(
       "Waiting on a fake approval",
     );
-    expect(
-      active.querySelector(".activity-feed__session-headline")?.getAttribute("data-health"),
-    ).toBe("waiting-on-user");
+    expect(attr(".activity-feed__session-headline", "data-health", active)).toBe("waiting-on-user");
     expect(active.textContent).toContain("Owner");
     for (const key of ["Stale digest", "Active run fallback", "Inactive run"]) {
-      expect(find(`[data-activity-session="${key}"] .activity-feed__session-headline`)).toBeNull();
+      expect(find(sessionSelector(key, ".activity-feed__session-headline"))).toBeNull();
     }
-    expect(find('[data-activity-session="Inactive run"] .activity-feed__run-dot')).toBeNull();
+    expect(find(sessionSelector("Inactive run", ".activity-feed__run-dot"))).toBeNull();
   });
 });
