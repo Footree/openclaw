@@ -80,6 +80,35 @@ export function installColdLoadTitleTrace(input: { sessionKey: string; expectedT
       }
     });
   };
+  preserve(IDBObjectStore.prototype, "get");
+  const originalGet = IDBObjectStore.prototype.get;
+  IDBObjectStore.prototype.get = function (this: IDBObjectStore, key) {
+    const request = originalGet.call(this, key);
+    if (
+      this.transaction.db.name === "openclaw-chat-snapshots" &&
+      this.name === "snapshots" &&
+      typeof key === "string" &&
+      key.endsWith("\u0000" + input.sessionKey)
+    ) {
+      // Hold delivery before either boot prewarm or the pane can consume the record.
+      request.addEventListener(
+        "success",
+        (event) => {
+          if (!cacheReadGate) {
+            return;
+          }
+          event.stopImmediatePropagation();
+          cacheReadPending = true;
+          void cacheReadGate.then(() => {
+            cacheReadPending = false;
+            request.dispatchEvent(new Event("success"));
+          });
+        },
+        { once: true },
+      );
+    }
+    return request;
+  };
   const captured = new WeakSet<object>();
   const capture = (owner: TitleOwner) => {
     if (captured.has(owner)) {
@@ -148,14 +177,7 @@ export function installColdLoadTitleTrace(input: { sessionKey: string; expectedT
           preserve(store, "read");
           const originalRead = store.read.bind(store);
           store.read = function (cacheKey) {
-            const reading = originalRead.call(this, cacheKey).then(async (snapshot) => {
-              if (cacheReadGate) {
-                cacheReadPending = true;
-                await cacheReadGate;
-                cacheReadPending = false;
-              }
-              return snapshot;
-            });
+            const reading = originalRead.call(this, cacheKey);
             void reading.then(
               (snapshot) => record("cache-read", { metadata: row(snapshot?.transcriptMetadata) }),
               () => record("cache-read-error", {}),
