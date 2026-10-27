@@ -25,8 +25,10 @@ node --import ./scripts/tsx.mjs scripts/perf/warm-reload-proof.ts \
 ```
 
 An existing dependency installation needs no reinstall. On a fresh Crabbox image,
-use `corepack pnpm` directly; do not run `corepack enable`. The Gateway and its synthetic admission proxy take two free
-ports in **19600–19699**, bind only `127.0.0.1`, and use a fresh state/config/home
+use `corepack pnpm` directly; do not run `corepack enable`. The Gateway, its native
+board sandbox at Gateway+1, and the synthetic admission proxy use distinct free
+ports in **19600–19699**. Calibration uses another temporary port and avoids the
+lazy sandbox listener. All bind only `127.0.0.1` and use a fresh state/config/home
 inside the invocation's `.local/` artifact directory. The seeder refuses existing
 state and paths outside this worktree's `.local/`. Every run allocates a unique
 child directory and retains failed attempts. Output must therefore be under
@@ -318,6 +320,13 @@ arm pages are frozen through CDP so they cannot generate competing UI work or
 RPCs during the active sample. State is seeded once; it is not
 regenerated between arms. The browser visits and normal read-side bookkeeping
 are part of both arms' real flow.
+
+The primary campaign state metric is **chronological visible-state occurrences**
+(`visibleStateOccurrences`, the visible census timeline length), including the
+carried old-page state on warm reloads. A revisit counts again: alternating
+between two unique images many times must not satisfy the old-page → complete-page
+two-state goal. Unique representatives remain alongside occurrences for the
+visible, masked-pixel, and unmasked-pixel censuses.
 
 `comparison.json` and `comparison.md` report median, Q1/Q3, every candidate-minus-
 base paired delta, and the number of better/worse pairs for visible-state and

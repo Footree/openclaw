@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Agent, createServer, request, type IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
+import { resolveSandboxHostPort } from "../../src/agents/sandbox-host.js";
+import type { GatewayAuthConfig } from "../../src/config/types.gateway.js";
 
 const viewerEmail = "proof-operator@example.invalid";
 const cookieName = "warm_reload_proof_session";
@@ -14,6 +16,9 @@ export async function startWarmReloadAdmission(options: { gatewayPort: number; p
     options.gatewayPort === options.port
   ) {
     throw new Error("Admission and Gateway need distinct loopback ports between 19600 and 19699");
+  }
+  if (options.port === resolveSandboxHostPort(options.gatewayPort)) {
+    throw new Error("Admission cannot occupy the Gateway's native sandbox port");
   }
   const origin = `http://127.0.0.1:${options.port}`;
   const session = randomUUID();
@@ -128,7 +133,7 @@ export async function startWarmReloadAdmission(options: { gatewayPort: number; p
     origin,
     viewerEmail,
     gatewayAuth: {
-      mode: "trusted-proxy" as const,
+      mode: "trusted-proxy",
       password,
       identityScopes: { [viewerEmail]: ["operator.admin"] },
       trustedProxy: {
@@ -141,7 +146,7 @@ export async function startWarmReloadAdmission(options: { gatewayPort: number; p
           scopes: ["operator.read", "operator.write", "operator.approvals", "operator.questions"],
         },
       },
-    },
+    } satisfies GatewayAuthConfig,
     browserCookie: {
       name: cookieName,
       value: session,
@@ -154,9 +159,9 @@ export async function startWarmReloadAdmission(options: { gatewayPort: number; p
       for (const socket of sockets) {
         socket.destroy();
       }
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     },
   };
 }

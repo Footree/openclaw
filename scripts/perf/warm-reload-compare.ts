@@ -27,9 +27,16 @@ type ComparisonRun = {
   visual: Census & { unmasked: Census; visibleChangeCensus?: Census };
 };
 type ComparisonResult = { arm: string; route: string; runs: ComparisonRun[] };
+type ComparisonPair = {
+  pair: number;
+  base: ReturnType<typeof metrics>;
+  candidate: ReturnType<typeof metrics>;
+  deltas: Record<string, number | null>;
+  contactSheets: string[];
+};
 const exec = promisify(execFile);
 
-async function run(command: string, args: string[], cwd: string) {
+async function runBuildCommand(command: string, args: string[], cwd: string) {
   const child = spawn(command, args, {
     cwd,
     stdio: "inherit",
@@ -101,8 +108,8 @@ export async function prepareWarmReloadBuild(
       const checkout = path.join(directory, `${options.label}-source`);
       await exec("git", ["worktree", "add", "--detach", checkout, revision]);
       sourceDirectory = checkout;
-      await run("corepack", ["pnpm", "install", "--frozen-lockfile"], checkout);
-      await run("corepack", ["pnpm", "build"], checkout);
+      await runBuildCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], checkout);
+      await runBuildCommand("corepack", ["pnpm", "build"], checkout);
       uiRoot = path.join(checkout, "dist", "control-ui");
     }
     const index = await readFile(path.join(uiRoot, "index.html"));
@@ -136,8 +143,11 @@ function distribution(values: number[]) {
 function metrics(run: ComparisonRun): Record<string, number | null> {
   return {
     visibleStates: run.visual.visibleChangeCensus?.distinctStates ?? null,
+    visibleStateOccurrences: run.visual.visibleChangeCensus?.timeline.length ?? null,
     pixelStates: run.visual.distinctStates,
+    pixelStateOccurrences: run.visual.timeline.length,
     unmaskedPixelStates: run.visual.unmasked.distinctStates,
+    unmaskedPixelStateOccurrences: run.visual.unmasked.timeline.length,
     lastVisibleChangeMs: run.visual.visibleChangeCensus?.lastVisualChangeMs ?? null,
     lastPixelChangeMs: run.visual.lastVisualChangeMs,
     helloHandledMs: run.probe.helloHandledMs,
@@ -236,7 +246,7 @@ export async function createWarmReloadComparison(results: ComparisonResult[], di
     if (!warm[0]!.length || warm[0]!.length !== warm[1]!.length) {
       throw new Error(`Comparison warm sample counts must match and be nonzero for ${route}`);
     }
-    const pairs = [];
+    const pairs: ComparisonPair[] = [];
     for (let index = 0; index < warm[0]!.length; index++) {
       const first = warm[0]![index]!;
       const second = warm[1]![index]!;

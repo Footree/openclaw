@@ -31,17 +31,27 @@ it("accepts existing UI and full dist roots without relabeling their source revi
 
 it("pairs warm samples, preserves missing paint evidence, and writes time-aligned unscaled sheets", async () => {
   const directory = temporary.make("reload-compare-report-");
-  const image = new photon.PhotonImage(
-    new Uint8Array(128 * 80 * 4).map((_, index) => (index % 4 === 3 ? 255 : 120)),
-    128,
-    80,
-  );
-  try {
-    await writeFile(path.join(directory, "frame.png"), image.get_bytes());
-  } finally {
-    image.free();
+  for (const [name, color] of [
+    ["old.png", 120],
+    ["changed.png", 180],
+  ] as const) {
+    const image = new photon.PhotonImage(
+      new Uint8Array(128 * 80 * 4).map((_, index) => (index % 4 === 3 ? 255 : color)),
+      128,
+      80,
+    );
+    try {
+      await writeFile(path.join(directory, name), image.get_bytes());
+    } finally {
+      image.free();
+    }
   }
-  const run = (milliseconds: number, states: number, warm = true) => ({
+  const timeline = (occurrences: number) =>
+    Array.from({ length: occurrences }, (_, index) => ({
+      atMs: index * 10,
+      frame: index % 2 === 0 ? "old.png" : "changed.png",
+    }));
+  const run = (milliseconds: number, occurrences: number, warm = true) => ({
     warm,
     outputDir: directory,
     probe: {
@@ -53,30 +63,30 @@ it("pairs warm samples, preserves missing paint evidence, and writes time-aligne
       cls: 0,
     },
     visual: {
-      distinctStates: states + 2,
+      distinctStates: 2,
       lastVisualChangeMs: milliseconds,
-      timeline: [{ atMs: 10, frame: "frame.png" }],
+      timeline: timeline(occurrences),
       unmasked: {
-        distinctStates: states + 4,
+        distinctStates: 2,
         lastVisualChangeMs: milliseconds,
-        timeline: [{ atMs: 10, frame: "frame.png" }],
+        timeline: timeline(occurrences),
       },
       visibleChangeCensus: {
-        distinctStates: states,
+        distinctStates: 2,
         lastVisualChangeMs: milliseconds,
-        timeline: [{ atMs: 10, frame: "frame.png" }],
+        timeline: timeline(occurrences),
       },
     },
   });
   const base = {
     arm: "base",
     route: "chat",
-    runs: [run(999, 99, false), run(100, 5), run(300, 7)],
+    runs: [run(999, 2, false), run(100, 3), run(300, 5)],
   };
   const candidate = {
     arm: "candidate",
     route: "chat",
-    runs: [run(888, 88, false), run(90, 4), run(330, 6)],
+    runs: [run(888, 2, false), run(90, 4), run(330, 6)],
   };
   const report = await createWarmReloadComparison([base, candidate], directory);
   expect(report.comparisons[0]?.summary).toMatchObject({
@@ -87,7 +97,15 @@ it("pairs warm samples, preserves missing paint evidence, and writes time-aligne
       candidateBetterPairs: 1,
       candidateWorsePairs: 1,
     },
-    visibleStates: { pairedDelta: { median: -1 }, candidateBetterPairs: 2 },
+    visibleStates: { base: { median: 2 }, candidate: { median: 2 }, pairedDelta: { median: 0 } },
+    visibleStateOccurrences: {
+      base: { median: 4, q1: 3.5, q3: 4.5 },
+      candidate: { median: 5, q1: 4.5, q3: 5.5 },
+      pairedDelta: { median: 1 },
+      candidateWorsePairs: 2,
+    },
+    pixelStateOccurrences: { pairedDelta: { median: 1 } },
+    unmaskedPixelStateOccurrences: { pairedDelta: { median: 1 } },
     auditedMainPaintMs: { base: null, candidate: null, pairedDelta: null },
   });
   expect(report.comparisons[0]?.pairs.map((pair) => pair.deltas.helloHandledMs)).toEqual([-10, 30]);
@@ -96,7 +114,7 @@ it("pairs warm samples, preserves missing paint evidence, and writes time-aligne
     await readFile(path.join(directory, firstSheet)),
   );
   try {
-    expect([sheet.get_width(), sheet.get_height()]).toEqual([256, 124]);
+    expect([sheet.get_width(), sheet.get_height()]).toEqual([256, 372]);
     const pixels = sheet.get_raw_pixels();
     expect(pixels[44 * 256 * 4]).toBe(120);
     expect(pixels[(44 * 256 + 128) * 4]).toBe(120);

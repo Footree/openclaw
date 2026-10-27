@@ -58,7 +58,9 @@ function matchingFadePixels(a: Pixels, b: Pixels, region: ReloadRegion) {
       product += left * right;
     }
   }
-  if (!count) return false;
+  if (!count) {
+    return false;
+  }
   const varianceA = squareA - (sumA * sumA) / count;
   const varianceB = squareB - (sumB * sumB) / count;
   // Blank/faint pixels cannot establish that content already painted, even when DOM matches.
@@ -152,9 +154,13 @@ function classifier(
     region: ReloadRegion,
     comparisonMask: Uint8Array,
   ) {
-    if (!adjacent) return tracker.last?.pixels;
+    if (!adjacent) {
+      return tracker.last?.pixels;
+    }
     const previous = tracker.comparisonPixels;
-    if (!previous || comparisonMask === mask) return previous;
+    if (!previous || comparisonMask === mask) {
+      return previous;
+    }
     let normalized: Uint8Array | undefined;
     // Normalize this region's animation pixels without advancing its unexplained changes.
     for (let y = region.y; y < region.y + region.height; y++) {
@@ -166,7 +172,9 @@ function classifier(
         }
       }
     }
-    if (normalized) tracker.comparisonPixels = { ...previous, data: normalized };
+    if (normalized) {
+      tracker.comparisonPixels = { ...previous, data: normalized };
+    }
     return tracker.comparisonPixels;
   }
   function accept(
@@ -183,7 +191,9 @@ function classifier(
       tracker.states.push(state);
     }
     tracker.last = state;
-    if (adjacent) tracker.comparisonPixels = pixels;
+    if (adjacent) {
+      tracker.comparisonPixels = pixels;
+    }
     tracker.timeline.push({
       atMs: frame.atMs,
       frame: path.basename(frame.file),

@@ -137,7 +137,7 @@ export async function applyWarmReloadPaintAudit(reportPath: string, auditPath: s
       "Visually inspected first visible content in original PNGs, with adjacent previous-frame provenance. App includes shared shell/skeleton and excludes the public reader; main requires non-placeholder transcript content; dashboard requires actual widget content. Semantic firstness is an inspector attestation, not inferred from DOM readiness or verified by this importer. Candidate frame times are not paint upper bounds.",
   };
   report.measurement =
-    "Original PNG screencast frames; no guarantee of display-vsync completeness. DOM-correlated candidate frames do not establish paint. Audited paint observations use selected visible pixels and the original navigation clock; adjacent frames remain linked. No product performance change is compared.";
+    "Original PNG screencast frames; no guarantee of display-vsync completeness. DOM-correlated candidate frames do not establish paint. Audited paint observations use selected visible pixels and the original navigation clock; adjacent frames remain linked. Compared arms, when present, retain their captured build identities.";
   const output = path.join(directory, "audited-report.json");
   await writeFile(output, JSON.stringify(report, null, 2) + "\n");
   return output;

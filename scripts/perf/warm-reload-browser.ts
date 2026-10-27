@@ -37,7 +37,9 @@ export async function launchWarmReloadBrowser() {
       (name) => name !== "PaintHolding",
     );
     const enabled = featureMembers(original, "enable-features");
-    if (!enabled.includes("PaintHolding")) enabled.push("PaintHolding");
+    if (!enabled.includes("PaintHolding")) {
+      enabled.push("PaintHolding");
+    }
     await probe.close();
     probe = undefined;
     browser = await chromium.launch({
@@ -61,8 +63,9 @@ export async function launchWarmReloadBrowser() {
         throw new Error(`Paint-holding setup changed unexpected ${name} members`);
       }
     }
-    if (!effective.includes("--headless"))
+    if (!effective.includes("--headless")) {
       throw new Error("Paint-holding proof requires headless Chromium");
+    }
     return {
       browser,
       configuration: {
@@ -165,7 +168,7 @@ export async function calibrateWarmReloadPaintHolding(
         await page.goto(`http://127.0.0.1:${options.port}/old`, { timeout: 4000 });
         const frames: Array<{ file: string; epochMs: number; kind: string }> = [],
           writes: Promise<void>[] = [];
-        let captureError: unknown;
+        let captureError: Error | undefined;
         const oldSurface = Promise.withResolvers<void>();
         const newSurface = Promise.withResolvers<void>();
         cdp.on("Page.screencastFrame", (event) => {
@@ -182,10 +185,17 @@ export async function calibrateWarmReloadPaintHolding(
             const file = `frame-${String(frames.length).padStart(5, "0")}.png`;
             frames.push({ file, epochMs: timestamp * 1000, kind });
             writes.push(writeFile(path.join(directory, file), buffer));
-            if (kind === "old") oldSurface.resolve();
-            if (kind === "complete") newSurface.resolve();
+            if (kind === "old") {
+              oldSurface.resolve();
+            }
+            if (kind === "complete") {
+              newSurface.resolve();
+            }
           } catch (error) {
-            captureError = error;
+            captureError =
+              error instanceof Error
+                ? error
+                : new Error("Calibration frame capture failed", { cause: error });
             oldSurface.resolve();
             newSurface.resolve();
           }
@@ -197,13 +207,17 @@ export async function calibrateWarmReloadPaintHolding(
           everyNthFrame: 1,
         });
         await bounded(oldSurface.promise);
-        if (captureError) throw captureError;
+        if (captureError) {
+          throw captureError;
+        }
         await page.goto(`http://127.0.0.1:${options.port}/new?delay=${delay}`, {
           waitUntil: "domcontentloaded",
           timeout: 4000,
         });
         await bounded(newSurface.promise);
-        if (captureError) throw captureError;
+        if (captureError) {
+          throw captureError;
+        }
         const milestones = await page.evaluate(() => ({
           origin: performance.timeOrigin,
           domMs: Number(document.body.dataset.domMs),
@@ -267,12 +281,17 @@ export async function calibrateWarmReloadPaintHolding(
       path.join(options.directory, "report.json"),
       JSON.stringify(report, null, 2) + "\n",
     );
-    if (!report.passed)
+    if (!report.passed) {
       throw new Error(
         "Paint-holding calibration failed or missed its early deadline (setup failure); inspect calibration report",
       );
+    }
     return report;
   } finally {
-    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (server.listening) {
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    }
   }
 }

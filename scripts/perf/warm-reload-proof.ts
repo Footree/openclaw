@@ -10,6 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs, promisify } from "node:util";
 import type { Browser, CDPSession, Page } from "playwright";
 import { isRecord } from "../../packages/normalization-core/src/record-coerce.ts";
+import { resolveSandboxHostPort } from "../../src/agents/sandbox-host.js";
 import {
   CONTROL_UI_TOKEN_SESSION_KEY_PREFIX,
   DEVICE_AUTH_STORAGE_KEY_PREFIX,
@@ -103,25 +104,36 @@ const stateDir = path.join(directory, "state");
 const viewport = { width: 1720, height: 1180 };
 const revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 
-async function freePort(excluded?: number) {
+async function freePort(excluded: number[] = [], gateway = false) {
   for (let port = 19600; port <= 19699; port++) {
-    if (port === excluded) {
+    const ports = gateway ? [port, resolveSandboxHostPort(port)] : [port];
+    if (ports.some((candidate) => candidate > 19699 || excluded.includes(candidate))) {
       continue;
     }
-    const server = createServer();
+    const servers = ports.map(() => createServer());
     try {
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(port, "127.0.0.1", resolve);
-      });
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      });
+      for (const [index, server] of servers.entries()) {
+        await new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(ports[index], "127.0.0.1", resolve);
+        });
+      }
       return port;
     } catch (error) {
       if (!(error instanceof Error) || !("code" in error) || error.code !== "EADDRINUSE") {
         throw error;
       }
+    } finally {
+      await Promise.all(
+        servers
+          .filter((server) => server.listening)
+          .map(
+            (server) =>
+              new Promise<void>((resolve) => {
+                server.close(() => resolve());
+              }),
+          ),
+      );
     }
   }
   throw new Error("No free loopback port in 19600–19699");
@@ -576,7 +588,9 @@ const interrupt = () => {
 };
 process.once("SIGINT", interrupt);
 process.once("SIGTERM", interrupt);
-const port = await freePort();
+const port = await freePort([], true);
+// HTML boards bind this second native listener lazily after the Gateway starts.
+const gatewayPorts = [port, resolveSandboxHostPort(port)];
 let baseUrl = `http://127.0.0.1:${port}`;
 const results: Array<{
   arm: string;
@@ -586,7 +600,11 @@ const results: Array<{
   runs: Array<Awaited<ReturnType<typeof captureReload>>>;
 }> = [];
 try {
-  const arms = [];
+  const arms: Array<{
+    name: string;
+    build: Awaited<ReturnType<typeof prepareWarmReloadBuild>>;
+    directory: string;
+  }> = [];
   for (const [name, input] of values.base && values.candidate
     ? [
         ["base", values.base],
@@ -605,7 +623,10 @@ try {
     });
   }
   if (values.admission === "signed-in") {
-    admission = await startWarmReloadAdmission({ gatewayPort: port, port: await freePort(port) });
+    admission = await startWarmReloadAdmission({
+      gatewayPort: port,
+      port: await freePort(gatewayPorts),
+    });
     baseUrl = admission.origin;
   }
   const servedUiRoot = path.join(directory, "served-ui");
@@ -695,7 +716,7 @@ try {
   browser = launched.browser;
   browserConfiguration = launched.configuration;
   paintHoldingCalibration = await calibrateWarmReloadPaintHolding(browser, {
-    port: await freePort(),
+    port: await freePort(gatewayPorts),
     directory: path.join(directory, "paint-holding-calibration"),
   });
   const cpuBefore = os.cpus().map((cpu) => cpu.times);
@@ -860,7 +881,7 @@ try {
       }
       for (let index = 1; index <= reloads; index++) {
         // Alternate pair order so one arm does not always inherit the hotter server.
-        const order = index % 2 === 1 ? prepared : [...prepared].reverse();
+        const order = index % 2 === 1 ? prepared : prepared.toReversed();
         for (const item of order) {
           await activate(item.arm);
           if (values.base) {

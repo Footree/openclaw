@@ -223,7 +223,7 @@ export function installWarmReloadBrowserProbe(route: string) {
       const shimmer =
         animation instanceof CSSAnimation &&
         /shimmer|skeleton-sweep/u.test(animation.animationName) &&
-        /skeleton/u.test(target.className.toString());
+        /skeleton/u.test(target.className);
       const fade =
         properties.size > 0 &&
         [...properties].every((key) => key === "opacity" || key === "visibility");
