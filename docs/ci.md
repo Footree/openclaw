@@ -49,6 +49,11 @@ Removed UI test paths also select the UI runtime inventory check so its literal
 Node-driven browser list cannot silently retain deleted tests. Both checks use
 the existing bounded Node planner and leave native and real-Gateway tiers unchanged.
 
+Added tests outside the ordinary suite roots select the full-suite ownership
+inventory, including rename destinations. The policy watch uses the PR base
+to distinguish additions from existing-file edits, which add no inventory work.
+See [selection and routing](/ci/scope-and-routing/selection) for the scope.
+
 Gateway close and run-shutdown owner changes likewise select the Gateway
 detached-execution shutdown and late-admission suites. `server.close()` reaches
 those owners through the kernel's lazy shutdown runtime, beyond the bounded
@@ -171,6 +176,15 @@ without the shared runner retain their independent commands. Changes to the shar
 runner select both checks in the artifact producer on current targets, while the
 changed Node plan defers its boundary coverage to that producer. This opt-in does
 not enable unrelated proof-tier checks.
+
+Full and runtime-only compiled workers reserve separate live/cache slots, so
+runtime checks cannot replace a retained full generation. The protected warmer
+keeps its prebuild full seed for source-only Node shards and publishes the full
+generation already prepared by postbuild collection separately. Only selected
+source verifiers in the artifact producer restore that postbuild seed, keyed by
+the existing Node toolchain identity. A missing archive keeps their uncached path;
+an input, topology, runtime, or exact-output-path mismatch still compiles fresh.
+The producer creates no shared cache archive.
 
 Real-Gateway UI shards have a 30-minute whole-job budget on the normal Blacksmith
 path. Successful 16-class jobs reached 19:04, leaving too little margin under the
@@ -375,7 +389,7 @@ prepares its required declarations. Only a successful preparation step
 enables prebuilt consumption, so the children reuse its JavaScript, assets, and
 freshness stamps instead of starting another full build.
 
-Vitest transform-cache fingerprints include direct Vitest configs at every depth and the shared `test/vitest/` inputs, except the two database-worker membership inventories that only select tests. They exclude the generated `.ci-harness` checkout so CI consumers and the protected warmer hash the same source inputs. Node bytecode caching remains enabled for ordinary Vitest runs; Vitest owns the worker-level coverage safeguard described in [local testing](/reference/test/local#core-commands).
+Vitest transform-cache generations include direct Vitest configs at every depth and the shared `test/vitest/` inputs, except the two database-worker membership inventories, unit-fast discovery inventory, and the E2E config factory. Each project fingerprints its declaring config and imported config dependencies; the E2E factory also supplies its canonical file when loaded through a wrapper. E2E-only config edits therefore invalidate E2E transforms while preserving unrelated unit transforms. Shared compiler, helper, dependency, and schema inputs retain their invalidation. Generations exclude the generated `.ci-harness` checkout so CI consumers and the protected warmer hash the same source inputs. Node bytecode caching remains enabled for ordinary Vitest runs; Vitest owns the worker-level coverage safeguard described in [local testing](/reference/test/local#core-commands).
 
 Transform keys also include each project's dependency optimizer directory. This
 prevents cached UI imports from mixing separate projects' Lit instances when a
