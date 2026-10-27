@@ -15,7 +15,8 @@ type ImageDecision = {
 };
 
 // Only identities and hashes survive a request, never image bytes. Restarting the
-// Gateway recomputes decisions once; an included source disappearing can still miss cache.
+// Gateway or LRU eviction recomputes decisions once; disappearing sources can still miss cache.
+const MAX_IMAGE_DECISION_SESSIONS = 1_000;
 const sessions = new Map<string, Map<string, ImageDecision>>();
 
 export function promptImageSessionKey(params: {
@@ -52,7 +53,14 @@ export async function resolvePromptImageDecisions(params: {
     ],
   ]);
   const decisions = sessions.get(params.sessionKey) ?? new Map<string, ImageDecision>();
+  sessions.delete(params.sessionKey);
   sessions.set(params.sessionKey, decisions);
+  if (sessions.size > MAX_IMAGE_DECISION_SESSIONS) {
+    for (const oldest of sessions.keys()) {
+      sessions.delete(oldest);
+      break;
+    }
+  }
   const previous = decisions.get(key);
   const result = await params.load(
     previous
