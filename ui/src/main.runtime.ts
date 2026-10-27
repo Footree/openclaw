@@ -97,7 +97,7 @@ export async function startControlUi(
           console.warn("OpenClaw service worker refresh failed.", error);
         });
     // Non-DOM platform listener: document lifetime owns it; no removal is needed.
-    navigator.serviceWorker.addEventListener("message", (event) => {
+    listen(navigator.serviceWorker, "message", (event) => {
       if (
         event.source === navigator.serviceWorker.controller &&
         controlUiWorkerActivationRetires(event.data)
@@ -110,7 +110,7 @@ export async function startControlUi(
       }
     });
     // Non-DOM platform listener: document lifetime owns it; no removal is needed.
-    navigator.serviceWorker.addEventListener("controllerchange", () => void refresh());
+    listen(navigator.serviceWorker, "controllerchange", () => void refresh());
     void navigator.serviceWorker
       .register(swUrl, { updateViaCache: "none" })
       .then(refresh)

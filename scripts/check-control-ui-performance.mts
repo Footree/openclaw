@@ -61,8 +61,8 @@ const controlUiPerformanceBudgets = {
   // The fixed 50 KiB ceiling bounds accumulation of small changes.
   startupCssGzipBytes: 50 * KIB,
   // Early connection evaluation cuts startup to 89,868 B and Chat to 19 requests.
-  // The shared application chunk measures 546,106 B; retain 25,328 B headroom.
-  largestJsGzipBytes: 571_434,
+  // The shared application chunk measures 545,995 B; retain 25,328 B headroom.
+  largestJsGzipBytes: 571_323,
   // Route consolidation saves 4,189 B total CSS gzip while merging always-loaded
   // sheets. Approved 2026-10-22: 57,154 B plus the prior 53,400 / 52,337 headroom.
   largestCssGzipBytes: 58_315,
