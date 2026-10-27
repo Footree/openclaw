@@ -91,7 +91,6 @@ function settlement(cleanupResult: "forced" | "uncertain" = "forced") {
   const finish = createDeferredCore();
   const cleanup = createDeferredCore<"forced" | "uncertain">();
   let pending: Promise<unknown> | undefined;
-  let child: Promise<unknown> | undefined;
   const track = <T>(work: Promise<T>) => {
     const tracked = work
       .catch((error: unknown) => {
@@ -120,13 +119,7 @@ function settlement(cleanupResult: "forced" | "uncertain" = "forced") {
     direct<T>(operation: (executor: UpdateCommandExecutor) => Promise<T>) {
       return track(withExecutor("run", operation));
     },
-    spawn<T>(...args: Parameters<typeof withChild<T>>) {
-      const work = withChild(...args);
-      child = work;
-      void work.catch((error: unknown) => admitted.reject(error));
-      return work;
-    },
-    async check(check: () => void | Promise<void>) {
+    async check(check: () => void | Promise<void>, child?: () => Promise<unknown> | undefined) {
       try {
         await admitted.promise;
         await setImmediate();
@@ -134,7 +127,7 @@ function settlement(cleanupResult: "forced" | "uncertain" = "forced") {
       } finally {
         finish.resolve();
         cleanup.resolve(cleanupResult);
-        await Promise.allSettled([pending, child]);
+        await Promise.allSettled([pending, child?.()]);
       }
     },
   };
@@ -270,7 +263,7 @@ it.each(kinds.flatMap((kind) => [false, true].map((rejects) => ({ kind, rejects 
     let signal: AbortSignal | undefined;
     let child: Promise<unknown> | undefined;
     const work = state.run(kind, async (fence) => {
-      child = state.spawn(fence, root, async (_grant, bind) => {
+      child = withChild(fence, root, async (_grant, bind) => {
         bind(process.pid + 1);
         signal = resolveCommandProcessSignal();
         admitted.resolve();
@@ -278,15 +271,19 @@ it.each(kinds.flatMap((kind) => [false, true].map((rejects) => ({ kind, rejects 
         signal!.throwIfAborted();
         return "child finished";
       });
+      void child.catch((error: unknown) => admitted.reject(error));
       await admitted.promise;
       if (rejects) {
         throw original;
       }
       return "operation finished";
     });
-    await state.check(() => {
-      expect([state.ended, rows.has(root), signal?.aborted]).toEqual([false, true, false]);
-    });
+    await state.check(
+      () => {
+        expect([state.ended, rows.has(root), signal?.aborted]).toEqual([false, true, false]);
+      },
+      () => child,
+    );
     await expect(child).resolves.toBe("child finished");
     expect(await work).toBe(rejects ? original : "operation finished");
     expect(rows.size).toBe(kind === "direct" ? 0 : 2);
@@ -301,10 +298,11 @@ it.each(cleanupCases)(
     const { admitted, cleanup } = state;
     const cancelled = createDeferredCore();
     let signal: AbortSignal | undefined;
+    let child: Promise<unknown> | undefined;
     const work = state.run(
       kind,
       async (fence) => {
-        state.spawn(fence, root, async (_grant, bind) => {
+        child = withChild(fence, root, async (_grant, bind) => {
           bind(process.pid + 1);
           signal = resolveCommandProcessSignal();
           retainCommandProcessCleanup(cleanup.promise);
@@ -313,20 +311,24 @@ it.each(cleanupCases)(
           await cancelled.promise;
           throw signal!.reason;
         });
+        void child.catch((error: unknown) => admitted.reject(error));
         await admitted.promise;
         return "operation finished";
       },
       1000,
     );
-    await state.check(async () => {
-      expect(signal?.aborted).toBe(false);
-      await vi.advanceTimersByTimeAsync(1000);
-      await cancelled.promise;
-      expect(signal?.reason).toBeInstanceOf(UpdateActivationTimeoutError);
-      expect([state.ended, rows.size]).toEqual([false, kind === "direct" ? 2 : 3]);
-      await vi.advanceTimersByTimeAsync(1000);
-      expect([state.ended, rows.size]).toEqual([false, kind === "direct" ? 2 : 3]);
-    });
+    await state.check(
+      async () => {
+        expect(signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1000);
+        await cancelled.promise;
+        expect(signal?.reason).toBeInstanceOf(UpdateActivationTimeoutError);
+        expect([state.ended, rows.size]).toEqual([false, kind === "direct" ? 2 : 3]);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect([state.ended, rows.size]).toEqual([false, kind === "direct" ? 2 : 3]);
+      },
+      () => child,
+    );
     await setImmediate();
     const error = await work;
     const timeout = collectNestedErrorCandidates(error).find(
@@ -391,18 +393,23 @@ it.each(cleanupResults)(
     const original = new Error("startup cancelled");
     const candidateRoot = path.join(root, "candidate");
     let fence: UpdateRecoveryFence | undefined;
+    let child: Promise<unknown> | undefined;
     const work = state.direct(async (executor) => {
       fence = await executor.enter(root);
-      await state.spawn(fence, candidateRoot, async () => {
+      child = withChild(fence, candidateRoot, async () => {
         retainCommandProcessCleanup(cleanup.promise);
         admitted.resolve();
         throw original;
       });
+      await child;
     });
-    await state.check(() => {
-      expect(rows.size).toBe(4);
-      expect(fence!.assertCurrent).toThrow("still running");
-    });
+    await state.check(
+      () => {
+        expect(rows.size).toBe(4);
+        expect(fence!.assertCurrent).toThrow("still running");
+      },
+      () => child,
+    );
     const error = await work;
     expect(hasCleanupError(error)).toBe(cleanupResult === "uncertain");
     expect(rows.size).toBe(cleanupResult === "uncertain" ? 4 : 0);
