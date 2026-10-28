@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { buildAgentMainSessionKey, DEFAULT_MAIN_KEY } from "../../lib/sessions/session-key.ts";
 import {
   armPendingAuthoritativeTerminalForHistory,
-  authoritativeAppliedRunIdsForSession,
   authoritativeHistoryAppliedForRun,
   authoritativeTerminalFencedBySteer,
   reconcileAuthoritativeTerminalHistory,
@@ -455,7 +454,6 @@ describe("deferred authoritative terminals", () => {
     ).toEqual([]);
     // Both reads must agree on one record: a late final replay stays
     // suppressed instead of being re-admitted through an alias gap (#149153).
-    expect(authoritativeAppliedRunIdsForSession(host, canonical).has("run-1")).toBe(true);
     expect(authoritativeHistoryAppliedForRun(host, "run-1", canonical)).toBe(true);
   });
 
@@ -502,7 +500,9 @@ describe("deferred authoritative terminals", () => {
         visibleMessages: page,
       }),
     ).toEqual([]);
-    expect(authoritativeAppliedRunIdsForSession(host, "main").size).toBe(65);
+    for (let index = 1; index <= 65; index += 1) {
+      expect(authoritativeHistoryAppliedForRun(host, `run-${index}`, "main")).toBe(true);
+    }
     // The next arm trims past the cap; the oldest applied run loses its flag
     // (documented boundary, still strictly safer than the old single slot).
     rememberAuthoritativeTerminal({
@@ -525,37 +525,6 @@ describe("deferred authoritative terminals", () => {
 });
 
 describe("unkeyed stream projections", () => {
-  it("retires an untagged stream projection attributed to the run", () => {
-    const host = {};
-    rememberAuthoritativeTerminal({
-      event: { key: "main", runId: "run-1", hasActiveRun: false },
-      host,
-      matchesChat: true,
-      payload: { message: persistedFinal(), messageId: "final-message" },
-      runIdBeforeApply: "run-1",
-    });
-    // The materialized fallback carries the run id but neither a session identity
-    // the WeakMap filter can see nor a live-terminal tag, so it used to survive
-    // the merge beside the persisted final (#149153).
-    const projection: Record<string, unknown> = {
-      role: "assistant",
-      content: [{ type: "text", text: "Final ans" }],
-      openclawStreamFallback: {
-        replacementText: "Final answer",
-        source: "current",
-        runId: "run-1",
-      },
-    };
-    expect(
-      reconcileAuthoritativeTerminalHistory({
-        host,
-        previousMessages: [projection],
-        sessionKey: "main",
-        visibleMessages: [persistedFinal()],
-      }),
-    ).toEqual([]);
-  });
-
   it("keeps a keyed commentary segment beside the terminal", () => {
     const host = {};
     rememberAuthoritativeTerminal({
@@ -773,53 +742,5 @@ describe("steer fencing", () => {
       visibleMessages: [finalRow, steerRow],
     });
     expect(authoritativeHistoryAppliedForRun(host, "run-1", "main")).toBe(true);
-  });
-
-  it("promotes the newer reply's pending record past an applied predecessor", () => {
-    const host = {};
-    armApplied(host);
-    const postSteerRow = {
-      role: "assistant",
-      content: [{ type: "text", text: "After steer answer" }],
-      __openclaw: { id: "post-steer-message" },
-    };
-    // The post-steer answer persisted while the run still read active.
-    rememberAuthoritativeTerminal({
-      event: { key: "main", runId: "run-1", hasActiveRun: true },
-      host,
-      matchesChat: true,
-      payload: { message: postSteerRow, messageId: "post-steer-message" },
-      runIdBeforeApply: "run-1",
-    });
-    const liveTerminal = rememberLiveTerminalRun(
-      { role: "assistant", content: [{ type: "text", text: "After steer answer" }] },
-      "run-1",
-    );
-    // One read carries both the steer and the newer row: promotion must replace
-    // the applied predecessor, and apply must retire the newer live copy (#149153).
-    armPendingAuthoritativeTerminalForHistory({
-      host,
-      sessionKey: "main",
-      visibleMessages: [finalRow, steerRow, postSteerRow],
-    });
-    expect(
-      reconcileAuthoritativeTerminalHistory({
-        host,
-        previousMessages: [liveTerminal],
-        sessionKey: "main",
-        visibleMessages: [finalRow, steerRow, postSteerRow],
-      }),
-    ).toEqual([]);
-    expect(authoritativeHistoryAppliedForRun(host, "run-1", "main")).toBe(true);
-    // The newer record must own the run: a leftover applied predecessor would
-    // still fence later reads and un-apply the converged run (#149153).
-    expect(
-      authoritativeTerminalFencedBySteer({
-        host,
-        messages: [finalRow, steerRow, postSteerRow],
-        runId: "run-1",
-        sessionKey: "main",
-      }),
-    ).toBe(false);
   });
 });

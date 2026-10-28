@@ -369,20 +369,6 @@ export function applyAuthoritativeTerminalsForHistory(options: {
   return applied;
 }
 
-/** Applied run ids for a session, for projection owners that retire live rows. */
-export function authoritativeAppliedRunIdsForSession(
-  host: object,
-  sessionKey: string,
-): ReadonlySet<string> {
-  const applied = new Set<string>();
-  for (const terminal of (authoritativeTerminals.get(host) ?? new Map()).values()) {
-    if (terminal.historyApplied && areUiSessionKeysEquivalent(terminal.sessionKey, sessionKey)) {
-      applied.add(terminal.runId);
-    }
-  }
-  return applied;
-}
-
 export function reconcileAuthoritativeTerminalHistory<T>(options: {
   appliedRunIds?: ReadonlySet<string>;
   host: object;
