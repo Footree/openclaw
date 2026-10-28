@@ -351,4 +351,213 @@ describe("#149153 live-copy retirement across history reloads", () => {
     expect(state.chatMessages).toEqual([user, saved]);
     expect(authoritativeHistoryAppliedForRun(state, "run-1", "main")).toBe(true);
   });
+
+  it("keeps the post-steer final when a stale read lands after it published (#149153)", async () => {
+    const user = userText("Ask", { id: "user-1", seq: 1 });
+    const preSteer = replyText("Before steer.", {
+      id: "pre-steer-message",
+      seq: 2,
+      runId: "run-1",
+    });
+    const steerRow = userText("Steer", { id: "steer-1", seq: 3, steerTargetRunId: "run-1" });
+    const savedFinal = replyText("After steer answer", {
+      id: "post-steer-message",
+      seq: 4,
+      runId: "run-1",
+    });
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ messages: [user, preSteer, steerRow], sessionId: "session-1" })
+      // Stale reads can repeat: each is served before the post-steer row
+      // persists, and none of them may delete the newer final (#149153).
+      .mockResolvedValueOnce({ messages: [user, preSteer, steerRow], sessionId: "session-1" })
+      .mockResolvedValueOnce({ messages: [user, preSteer, steerRow], sessionId: "session-1" })
+      .mockResolvedValue({
+        messages: [user, preSteer, steerRow, savedFinal],
+        sessionId: "session-1",
+      });
+    const state = createHistoryState(request, {
+      chatRunId: "run-1",
+      currentSessionId: "session-1",
+    });
+
+    receive(state, "delta", { message: replyText("Before steer."), replace: true });
+    rememberAuthoritativeTerminal({
+      host: state,
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      payload: { message: preSteer, messageId: "pre-steer-message" },
+      matchesChat: true,
+      runIdBeforeApply: "run-1",
+    });
+    // The steer-triggered reload applies the pre-steer row.
+    await loadChatHistory(state);
+    expect(authoritativeHistoryAppliedForRun(state, "run-1", "main")).toBe(true);
+
+    // The post-steer final publishes while its own durable row is still in flight.
+    const live = replyText("After steer answer");
+    receive(state, "final", { message: live });
+    expect(state.chatMessages.some((row) => row === live)).toBe(true);
+
+    // The stale read carries only pre-steer rows: its retirement pass must not
+    // delete the newer final, whose own durable row has not arrived yet.
+    await loadChatHistory(state);
+    expect(state.chatMessages.some((row) => row === live)).toBe(true);
+    await loadChatHistory(state);
+    expect(state.chatMessages.some((row) => row === live)).toBe(true);
+
+    // Its own persistence converges back to exactly one copy per row.
+    rememberAuthoritativeTerminal({
+      host: state,
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      payload: { message: savedFinal, messageId: "post-steer-message" },
+      matchesChat: true,
+      runIdBeforeApply: "run-1",
+    });
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([user, preSteer, steerRow, savedFinal]);
+  });
+
+  it("keeps the post-steer final when the first read after its publish is already stale (#149153)", async () => {
+    const user = userText("Ask", { id: "user-1", seq: 1 });
+    const preSteer = replyText("Before steer.", {
+      id: "pre-steer-message",
+      seq: 2,
+      runId: "run-1",
+    });
+    const steerRow = userText("Steer", { id: "steer-1", seq: 3, steerTargetRunId: "run-1" });
+    const savedFinal = replyText("After steer answer", {
+      id: "post-steer-message",
+      seq: 4,
+      runId: "run-1",
+    });
+    const request = vi
+      .fn()
+      // The first read lands already stale: the steer and the newer final
+      // both predate its settlement, but its page omits the newer row.
+      .mockResolvedValueOnce({ messages: [user, preSteer, steerRow], sessionId: "session-1" })
+      .mockResolvedValue({
+        messages: [user, preSteer, steerRow, savedFinal],
+        sessionId: "session-1",
+      });
+    const state = createHistoryState(request, {
+      chatRunId: "run-1",
+      currentSessionId: "session-1",
+    });
+
+    // The pre-steer row persists while the run still reads active; no read
+    // has applied it yet when the post-steer final publishes.
+    rememberAuthoritativeTerminal({
+      host: state,
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      payload: { message: preSteer, messageId: "pre-steer-message" },
+      matchesChat: true,
+      runIdBeforeApply: "run-1",
+    });
+    const live = replyText("After steer answer");
+    receive(state, "final", { message: live });
+    expect(state.chatMessages.some((row) => row === live)).toBe(true);
+
+    // The stale first read promotes the pre-steer row but must still not
+    // retire the newer final: its own durable row is not in the page.
+    await loadChatHistory(state);
+    expect(state.chatMessages.some((row) => row === live)).toBe(true);
+
+    // Its own persistence converges back to exactly one copy per row.
+    rememberAuthoritativeTerminal({
+      host: state,
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      payload: { message: savedFinal, messageId: "post-steer-message" },
+      matchesChat: true,
+      runIdBeforeApply: "run-1",
+    });
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([user, preSteer, steerRow, savedFinal]);
+  });
+
+  it("keeps the post-steer final when a stale cursor delta lands after it published (#149153)", async () => {
+    const user = cursorMessage("user", "Ask", "user-1", 1);
+    const preSteer = cursorMessage("assistant", "Before steer.", "pre-steer-message", 2, {
+      runId: "run-1",
+    });
+    const steerRow = cursorMessage("user", "Steer", "steer-1", 3, {
+      steerTargetRunId: "run-1",
+    });
+    const savedFinal = cursorMessage("assistant", "After steer answer", "post-steer-message", 4, {
+      runId: "run-1",
+    });
+    const handler = vi
+      .fn()
+      .mockImplementationOnce(async () =>
+        delta("cursor-2", [persisted(preSteer)], {
+          activeLeafEntryId: "leaf-2",
+          updatedAt: 3,
+          hasActiveRun: true,
+        }),
+      )
+      // Stale deltas can repeat: each is served before the post-steer row
+      // persists, and none of them may delete the newer final (#149153).
+      .mockImplementationOnce(async () =>
+        delta("cursor-3", [persisted(preSteer)], {
+          activeLeafEntryId: "leaf-2",
+          updatedAt: 3,
+          hasActiveRun: true,
+        }),
+      )
+      .mockImplementationOnce(async () =>
+        delta("cursor-4", [persisted(preSteer)], {
+          activeLeafEntryId: "leaf-2",
+          updatedAt: 3,
+          hasActiveRun: true,
+        }),
+      )
+      .mockImplementation(async () =>
+        delta("cursor-5", [persisted(savedFinal)], {
+          activeLeafEntryId: "leaf-3",
+          updatedAt: 4,
+          hasActiveRun: false,
+        }),
+      );
+    const state = createCursorState(handler);
+    state.chatDisplayedLeafEntryId = "leaf-1";
+    seedCachedHistory(state, [user], "cursor-1");
+
+    // The pre-steer row persists while the run still reads active.
+    rememberAuthoritativeTerminal({
+      host: state,
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      payload: { message: preSteer, messageId: "pre-steer-message" },
+      matchesChat: true,
+      runIdBeforeApply: "run-1",
+    });
+    await loadChatHistory(state);
+    expect(authoritativeHistoryAppliedForRun(state, "run-1", "main")).toBe(true);
+    expect(state.chatMessages).toEqual([user, preSteer]);
+
+    // The steer persists live, then the post-steer final publishes.
+    const live = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "text", text: "After steer answer" }] },
+      "run-1",
+    );
+    publishChatSessionProjectionMessages(state, [user, preSteer, steerRow, live], {
+      scope: { sessionKey: "main" },
+    });
+
+    // The stale delta carries no post-steer row: the newer final must
+    // survive it, and it must survive a repeat of that stale delta too.
+    await loadChatHistory(state);
+    expect(state.chatMessages.some((row) => row === live)).toBe(true);
+    await loadChatHistory(state);
+    expect(state.chatMessages.some((row) => row === live)).toBe(true);
+
+    // Its own persistence converges back to exactly one copy per row.
+    rememberAuthoritativeTerminal({
+      host: state,
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      payload: { message: savedFinal, messageId: "post-steer-message" },
+      matchesChat: true,
+      runIdBeforeApply: "run-1",
+    });
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([user, preSteer, steerRow, savedFinal]);
+  });
 });

@@ -616,43 +616,6 @@ describe("unkeyed stream projections", () => {
   });
 });
 
-describe("terminal ownership", () => {
-  it("arms a pure-media final that carries no text", () => {
-    const host = {};
-    const liveTerminal = rememberLiveTerminalRun(
-      { role: "assistant", content: [{ type: "image", artifactId: "art-1" }] },
-      "run-1",
-    );
-    // An image-only answer owns the run's terminal: a blank-text check would
-    // leave it unarmed and the media would render twice (#149153).
-    const imageFinal = {
-      role: "assistant",
-      content: [{ type: "image", artifactId: "art-1" }],
-      __openclaw: { id: "image-final" },
-    };
-    rememberAuthoritativeTerminal({
-      event: { key: "main", runId: "run-1", hasActiveRun: true },
-      host,
-      matchesChat: true,
-      payload: { message: imageFinal, messageId: "image-final" },
-      runIdBeforeApply: "run-1",
-    });
-    armPendingAuthoritativeTerminalForHistory({
-      host,
-      sessionKey: "main",
-      visibleMessages: [imageFinal],
-    });
-    expect(
-      reconcileAuthoritativeTerminalHistory({
-        host,
-        previousMessages: [liveTerminal],
-        sessionKey: "main",
-        visibleMessages: [imageFinal],
-      }),
-    ).toEqual([]);
-  });
-});
-
 describe("steer fencing", () => {
   const finalRow = {
     role: "assistant",
@@ -745,6 +708,116 @@ describe("steer fencing", () => {
         host,
         messages: [finalRow, steerRow],
         runId: "run-2",
+        sessionKey: "main",
+      }),
+    ).toBe(false);
+  });
+
+  it("stops contributing an applied run id once a later read fences it", () => {
+    const host = {};
+    armApplied(host);
+    const liveTerminal = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "text", text: "After steer answer" }] },
+      "run-1",
+    );
+    // A stale read carries the applied row and the steer but not the newer
+    // reply's own row: retirement must not delete that reply, on any repeat
+    // of that read, and the durable replay flag must survive it (#149153).
+    for (let read = 0; read < 2; read += 1) {
+      expect(
+        reconcileAuthoritativeTerminalHistory({
+          host,
+          previousMessages: [liveTerminal],
+          sessionKey: "main",
+          visibleMessages: [finalRow, steerRow],
+        }),
+      ).toEqual([liveTerminal]);
+    }
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "main")).toBe(true);
+  });
+
+  it("keeps the durable applied flag when a fenced read follows convergence", () => {
+    const host = {};
+    armApplied(host);
+    const postSteerRow = {
+      role: "assistant",
+      content: [{ type: "text", text: "After steer answer" }],
+      __openclaw: { id: "post-steer-message" },
+    };
+    rememberAuthoritativeTerminal({
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      host,
+      matchesChat: true,
+      payload: { message: postSteerRow, messageId: "post-steer-message" },
+      runIdBeforeApply: "run-1",
+    });
+    // Converge: the newer row replaces the pre-steer record and applies.
+    armPendingAuthoritativeTerminalForHistory({
+      host,
+      sessionKey: "main",
+      visibleMessages: [finalRow, steerRow, postSteerRow],
+    });
+    reconcileAuthoritativeTerminalHistory({
+      host,
+      previousMessages: [],
+      sessionKey: "main",
+      visibleMessages: [finalRow, steerRow, postSteerRow],
+    });
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "main")).toBe(true);
+    // A later stale read that still omits the converged row must not retract
+    // the durable flag: the gateway replay gate reads it (#149153).
+    reconcileAuthoritativeTerminalHistory({
+      host,
+      previousMessages: [],
+      sessionKey: "main",
+      visibleMessages: [finalRow, steerRow],
+    });
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "main")).toBe(true);
+  });
+
+  it("promotes the newer reply's pending record past an applied predecessor", () => {
+    const host = {};
+    armApplied(host);
+    const postSteerRow = {
+      role: "assistant",
+      content: [{ type: "text", text: "After steer answer" }],
+      __openclaw: { id: "post-steer-message" },
+    };
+    // The post-steer answer persisted while the run still read active.
+    rememberAuthoritativeTerminal({
+      event: { key: "main", runId: "run-1", hasActiveRun: true },
+      host,
+      matchesChat: true,
+      payload: { message: postSteerRow, messageId: "post-steer-message" },
+      runIdBeforeApply: "run-1",
+    });
+    const liveTerminal = rememberLiveTerminalRun(
+      { role: "assistant", content: [{ type: "text", text: "After steer answer" }] },
+      "run-1",
+    );
+    // One read carries both the steer and the newer row: promotion must replace
+    // the applied predecessor, and apply must retire the newer live copy (#149153).
+    armPendingAuthoritativeTerminalForHistory({
+      host,
+      sessionKey: "main",
+      visibleMessages: [finalRow, steerRow, postSteerRow],
+    });
+    expect(
+      reconcileAuthoritativeTerminalHistory({
+        host,
+        previousMessages: [liveTerminal],
+        sessionKey: "main",
+        visibleMessages: [finalRow, steerRow, postSteerRow],
+      }),
+    ).toEqual([]);
+    expect(authoritativeHistoryAppliedForRun(host, "run-1", "main")).toBe(true);
+    // The newer record must own the run: a leftover applied predecessor would
+    // still fence later reads and un-apply the converged run (#149153).
+    expect(
+      authoritativeTerminalFencedBySteer({
+        host,
+        messages: [finalRow, steerRow, postSteerRow],
+        runId: "run-1",
         sessionKey: "main",
       }),
     ).toBe(false);

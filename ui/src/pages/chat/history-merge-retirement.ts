@@ -4,10 +4,7 @@ import {
   publishChatSessionProjection,
   type ChatSessionProjectionOwner,
 } from "./history-merge.ts";
-import {
-  authoritativeAppliedRunIdsForSession,
-  isSupersededLiveProjection,
-} from "./terminal-message-identity.ts";
+import { isSupersededLiveProjection } from "./terminal-message-identity.ts";
 
 /**
  * Retire pane entries whose run's authoritative terminal is already in history.
@@ -17,9 +14,11 @@ import {
  */
 export function retireSupersededLiveProjections(
   owner: ChatSessionProjectionOwner,
-  sessionKey: string,
+  appliedRunIds: ReadonlySet<string>,
 ): void {
-  const appliedRunIds = authoritativeAppliedRunIdsForSession(owner, sessionKey);
+  // The caller passes the effective set from the same apply pass that filtered
+  // history: retirement and the history filter must read one consistent
+  // snapshot, so a fenced run's newer reply survives both (#149153).
   if (appliedRunIds.size === 0) {
     return;
   }

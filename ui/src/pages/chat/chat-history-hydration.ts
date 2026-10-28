@@ -231,12 +231,14 @@ export async function hydrateChatHistory(
         sessionKey,
         visibleMessages: state.chatMessages,
       });
-      applyAuthoritativeTerminalsForHistory({
+      // The history filter and the pane cleanup below share one effective
+      // applied set from the same read (#149153).
+      const cursorAppliedRunIds = applyAuthoritativeTerminalsForHistory({
         host: state,
         sessionKey,
         visibleMessages: state.chatMessages,
       });
-      retireSupersededLiveProjections(state, sessionKey);
+      retireSupersededLiveProjections(state, cursorAppliedRunIds);
       const historyProjection = getChatSessionProjection(state);
       if (Object.hasOwn(response.sessionInfo, "activeLeafEntryId")) {
         state.chatDisplayedLeafEntryId = response.sessionInfo.activeLeafEntryId?.trim() || null;
@@ -297,7 +299,15 @@ export async function hydrateChatHistory(
     const nextSessionId = historySessionId(res);
     const visibleMessages = visibleChatHistoryMessages(messages);
     armPendingAuthoritativeTerminalForHistory({ host: state, sessionKey, visibleMessages });
+    // One effective applied set feeds the history filter and the pane cleanup,
+    // so a fenced run's newer reply survives both (#149153).
+    const appliedRunIds = applyAuthoritativeTerminalsForHistory({
+      host: state,
+      sessionKey,
+      visibleMessages,
+    });
     const previousTerminalMessages = reconcileAuthoritativeTerminalHistory({
+      appliedRunIds,
       host: state,
       previousMessages,
       sessionKey,
@@ -305,7 +315,7 @@ export async function hydrateChatHistory(
     });
     // The pane projection still holds the retired live rows; clear them before
     // the snapshot reduction retains them as live entries (#149153).
-    retireSupersededLiveProjections(state, sessionKey);
+    retireSupersededLiveProjections(state, appliedRunIds);
     const hasActiveLeafEntryId = Object.hasOwn(res.sessionInfo ?? {}, "activeLeafEntryId");
     const nextDisplayedLeafEntryId = hasActiveLeafEntryId
       ? res.sessionInfo?.activeLeafEntryId?.trim() || null

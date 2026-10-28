@@ -292,11 +292,13 @@ export function armPendingAuthoritativeTerminalForHistory(options: {
     pendingByRun.delete(key);
     // The applied fast path is scoped to the pending's own session: another
     // session's record for the same run id must not block this promotion (#149153).
-    if (
-      authoritativeTerminals
-        .get(options.host)
-        ?.get(terminalRecordKey(pending.sessionKey, pending.runId))?.historyApplied
-    ) {
+    // Only the SAME applied terminal blocks re-arming: a different pending
+    // messageId is the run's newer reply, and its row in this history must
+    // replace even an applied predecessor so the pane converges (#149153).
+    const settled = authoritativeTerminals
+      .get(options.host)
+      ?.get(terminalRecordKey(pending.sessionKey, pending.runId));
+    if (settled?.historyApplied && settled.messageId === pending.messageId) {
       continue;
     }
     setAuthoritativeTerminal(options.host, {
@@ -332,7 +334,21 @@ export function applyAuthoritativeTerminalsForHistory(options: {
     if (!areUiSessionKeysEquivalent(terminal.sessionKey, options.sessionKey)) {
       continue;
     }
+    // A steer row after this terminal's own row fences the record on this
+    // read: the run owes a newer reply whose durable row the read does not
+    // carry, so the run must not join the retirement set on either path —
+    // repeated stale reads included. The durable historyApplied flag keeps its
+    // replay-suppression meaning; a stale read never retracts it (#149153).
+    const fenced = authoritativeTerminalFencedBySteer({
+      host: options.host,
+      messages: options.visibleMessages,
+      runId: terminal.runId,
+      sessionKey: options.sessionKey,
+    });
     if (terminal.historyApplied) {
+      if (fenced) {
+        continue;
+      }
       applied.add(terminal.runId);
       continue;
     }
@@ -346,7 +362,9 @@ export function applyAuthoritativeTerminalsForHistory(options: {
       continue;
     }
     terminals.set(key, { ...terminal, historyApplied: true });
-    applied.add(terminal.runId);
+    if (!fenced) {
+      applied.add(terminal.runId);
+    }
   }
   return applied;
 }
@@ -366,12 +384,15 @@ export function authoritativeAppliedRunIdsForSession(
 }
 
 export function reconcileAuthoritativeTerminalHistory<T>(options: {
+  appliedRunIds?: ReadonlySet<string>;
   host: object;
   previousMessages: T[];
   sessionKey: string;
   visibleMessages: T[];
 }): T[] {
-  const appliedRunIds = applyAuthoritativeTerminalsForHistory(options);
+  // Callers that also retire pane rows pass the same effective set from one
+  // apply pass, so the filter and the cleanup read one snapshot (#149153).
+  const appliedRunIds = options.appliedRunIds ?? applyAuthoritativeTerminalsForHistory(options);
   if (!appliedRunIds.size) {
     return options.previousMessages;
   }
